@@ -1,0 +1,879 @@
+# Directory Update Log
+
+## 2026-07-26 (11)
+* **Fixed the Thunderbolt link, which had never worked since the Proxmox install.** Dave
+  asked for the Mac-mini↔NAS TB connection to be set up after a previous attempt failed.
+  The bundle described the link as working-but-limited; the live state was that it was
+  **completely down**, and the docs asserted the opposite of reality on the one detail that
+  mattered.
+  **Root cause.** `network/thunderbolt-link.md` and
+  [troubleshooting-gotchas.md](playbooks/troubleshooting-gotchas.md) both said the interface
+  "is renamed by udev to `nic0` and never appears as `thunderbolt0`". Live, `ip -br addr`
+  showed `thunderbolt0 DOWN` and **no `nic0` at all**. The rename is not a udev rule — it
+  comes from `/usr/local/lib/systemd/network/50-pmx-nic0.link`, written by the Proxmox
+  installer on 2026-07-04 with a **`MACAddress=02:a4:d5:51:b2:25`** match. `thunderbolt-net`'s
+  MAC is locally administered and tied to the current pairing; the live value is
+  `02:9b:2f:75:1f:55`, so the match had gone stale and nothing renamed anything. Two
+  downstream pieces then silently applied to a nonexistent interface: the `auto nic0` /
+  `10.10.10.2/30` stanza in `/etc/network/interfaces`, and
+  `/etc/udev/rules.d/99-tb-net.rules`, which matched `KERNEL=="nic0"` — wrong key regardless,
+  since `KERNEL` is the kernel name (`thunderbolt0`), not the renamed one. **This also
+  corrects entry (17) of 2026-07-25**, which dismissed the `nic0 not recognized` warning
+  from `ifreload -a` as "pre-existing, already-documented Thunderbolt hotplug behavior" —
+  it was this bug, visible in plain text and misread. The cable and pairing were never at
+  fault: `dmesg` had been logging `thunderbolt 0-2: Apple Inc. Mac14,3` all along.
+  **Fix.** Replaced the MAC match with `Driver=thunderbolt-net` (originals kept as
+  `.bak-20260726`), and rewrote the udev rule to fire off the same driver property with
+  `RUN+="/usr/bin/systemd-run --no-block /usr/sbin/ifup nic0"` — `--no-block` because
+  `RUN+=` must not block the udev event. The Mac needed no change at all: Thunderbolt Bridge
+  (`bridge0`, `10.10.10.1/255.255.255.252`) was already configured correctly and went
+  `status: active` by itself the moment the host's end came up.
+  **Verified rather than assumed**, per the standing rule. Ping ~0.5ms / 0% loss; SSH over
+  TB works (host key fingerprint checked against the known `192.168.0.10` entry before
+  pinning `10.10.10.2` in `known_hosts`, not blindly accepted). Then the part worth the
+  effort: `modprobe -r thunderbolt_net; modprobe thunderbolt_net` as a stand-in for a
+  replug moved the ifindex 66 → 67, proving a real destroy/recreate, and the interface came
+  back as `nic0`, up, already addressed — so the hotplug path genuinely works, which is the
+  thing the old MAC-pinned config could never do. Throughput: **311 MB/s** host→Mac over TB
+  versus **116 MB/s** over the saturated 1GbE, and ~281 MB/s Mac→host raw TCP; both TB
+  numbers are bounded by SSH crypto and `nc` at 90% CPU, not the link. **The old 85KB-stall
+  symptom did not reproduce** in either direction with checksum/TSO/GSO/GRO left on.
+  **Left deliberately undone.** SMB still goes over Ethernet. The link terminates on the
+  host, [nas (CT100)](containers/nas.md) has no interface on it, and the `/30` has no spare
+  address — moving SMB onto TB means re-addressing the link and bridging into the guest,
+  i.e. re-opening the design Dave previously closed. Logged as a P2 decision with the
+  measured upside instead of being done unprompted. Also noted in passing that the
+  abandoned NAT-over-TB attempt's dead `vmbr1` had `bridge-ports none` **because `nic0` did
+  not exist** — the same bug, which means the old "TB is unreliable" verdict rests on a
+  broken foundation. MTU is still 1500 (jumbo needs `sudo` on the Mac) — logged as P4.
+  **Incidental**: the P3 "unidentified device on `192.168.0.25`" is Dave's Mac mini —
+  `ifconfig en0` on the Mac shows MAC `5c:1b:f4:88:46:08` and that address. Rewritten as a
+  DHCP-lease-in-the-static-block item rather than a mystery.
+  Updated [network/thunderbolt-link.md](network/thunderbolt-link.md) (rewritten),
+  [playbooks/troubleshooting-gotchas.md](playbooks/troubleshooting-gotchas.md),
+  [containers/nas.md](containers/nas.md), [CLAUDE.md](CLAUDE.md) (the key-facts line
+  asserted the wrong thing), and [actions.md](actions.md) (one item identified and
+  rewritten, one new P2, one new P4).
+
+## 2026-07-26 (10)
+* **Set [CT113](/containers/code-server.md)'s password and closed the websocket question
+  entry (9) left open.** Replaced the deb's install-time random password with a fresh
+  20-character `openssl rand` value generated in-container, and tightened
+  `config.yaml` from the shipped `0644` to `0600` — world-readable is a pointless default
+  even in a container with one user. Old config kept as `.bak-20260726`. The value is
+  **deliberately not in this bundle**; it was handed over in the session that set it, and the
+  page carries the change one-liner instead.
+  The interesting half was verification. Entry (9) could only get as far as `200` on the
+  login page, which proves nothing about whether the editor actually renders — code-server
+  is entirely websocket-driven once the workbench boots, and a proxy that passes HTML
+  happily but drops the upgrade produces exactly the grey-screen-forever failure. With a
+  password there's a real session, so the whole chain got exercised: `POST /login` → `302`
+  plus a `code-server-session` cookie (which is itself an argon2id token, not the password),
+  authenticated `GET /` returning workbench HTML rather than the login page, and **all six
+  assets the client pulls returning `200`** — including the 17.5MB `workbench.js` bundle.
+  Then the part that actually mattered: a raw websocket handshake against
+  `/?reconnectionToken=…` returned **`101 Switching Protocols` with `Server: Caddy`**, and
+  the server's first frame decoded as a 13-byte VS Code control message of **type 9
+  (`Resume`)** — the message a live VS Code server sends to tell the client to start
+  streaming. Ran the same probe direct against `192.168.0.27:8080` and got an identical
+  result, which isolates the proxy: plain `reverse_proxy` carries it, no `transport` block,
+  matching Audiobookshelf's socket.io and unlike `proxmox.lan`.
+  Two dead ends worth recording. The Proxmox host **can't resolve `coder.lan`** — its own
+  `/etc/resolv.conf` still points at the router, not AdGuard, so every check from there needs
+  `--resolve` or a raw socket with an explicit `Host:` header. And the browser route was
+  abandoned on purpose: `https://coder.lan` hits Chrome's cert interstitial (the Caddy CA is
+  still untrusted on the Mac — the standing P4), the extension can't script an interstitial,
+  and getting past the login form would mean typing the password into a field, which isn't
+  something to do on Dave's behalf. So **pixels were never rendered** — everything the
+  browser would fetch and the protocol it would speak were exercised directly instead, and
+  both the container page and this entry say so rather than implying a visual check happened.
+  Reworked [actions.md](/actions.md)'s P4 accordingly: the "set your password" item is
+  closed, and what remains is the pair of standing facts behind it — the service runs as
+  root in-container, and `cert: false` leaves plain HTTP answering on the LAN.
+
+## 2026-07-26 (9)
+* **Built [code-server (CT113)](/containers/code-server.md) at 192.168.0.27 and gave it
+  `https://coder.lan`** — VS Code in the browser, the fifteenth guest on the box.
+  The request read "install Coder Code Server", which names **two different products from
+  the same vendor**: `coder/code-server` (one binary, one VS Code instance over HTTP) and
+  `coder/coder` (a multi-user workspace platform needing Postgres and a Docker/K8s
+  provisioner). Read as the former, which is what the compound name almost certainly means
+  and by far the smaller build — but it's a genuine fork in the road rather than a detail,
+  so it's called out at the top of the container page: if the platform was wanted, CT113 is
+  the wrong artifact and should be replaced, not extended.
+  Built to [fleet policy](/network/ip-addressing.md) from the start rather than fixed
+  afterwards, same as CT111 and CT112: static IP, AdGuard DNS, and the IPv6-off sysctl in
+  place at provisioning time. **Ran the ping check anyway** even though the ledger already
+  listed `.27`–`.32` as free from the sweep earlier the same day — `.27` and `.28` both
+  silent, no ARP entry. That page says the ping isn't a formality and `.25` is the standing
+  proof; taking a nine-hour-old sweep's word for it is exactly the shortcut it warns about.
+  Sized past the recent media containers — 4 cores / 4GB and a **32G** rootfs against
+  CT112's 16G — on the reasoning that language servers, builds and `node_modules` are the
+  actual workload. No bind mounts; if checkouts should live on a pool that's an `mp0` to add
+  later, not a rootfs to grow.
+  Skipped upstream's `curl … install.sh | sh`. Unlike the Audiobookshelf case in entry (8),
+  **that URL is real** — it just platform-detects and fetches the same `.deb`, so the pipe
+  into a root shell buys nothing. Took the `.deb` from GitHub Releases directly and recorded
+  its sha256 on the container page. Checked for a published checksum file to verify against
+  and **there isn't one** — the release carries packages and tarballs only — so the page says
+  plainly that the hash is a record of what was installed, not a verification, and HTTPS to
+  github.com was the whole integrity guarantee. Better to write that down than to let a
+  hash in a doc imply a check that never happened.
+  Two decisions documented as decisions rather than defaults. It **runs as root** via the
+  deb's `code-server@root` template unit — defensible in an unprivileged LXC where
+  container-root is host UID 100000, and near-necessary for a dev box that gets asked to
+  `apt install` toolchains, but it does mean the login password is root-in-CT113. And
+  `cert: false` with `bind-addr: 0.0.0.0:8080` leaves plain HTTP answering on the LAN, which
+  is what every other service here does given there's no active Proxmox firewall — worth
+  stating rather than leaving implied.
+  **The password was left as the deb's random default and never read**, same call as CT112's
+  first-run setup: a credential isn't something to set on Dave's behalf. Both that and the
+  root question are in [actions.md](/actions.md) with the commands to change either.
+  Wired `coder.lan` → `192.168.0.27:8080` through
+  [Caddy](/playbooks/reverse-proxy-caddy.md) (validated before reloading, reloaded without
+  downtime) and added the **17th** [AdGuard rewrite](/network/dns-adguard.md) via the
+  pull/parse/diff/push procedure that page mandates — YAML parsed to 17 entries, diff showed
+  exactly the three intended lines. Verified end-to-end: `302` direct, `dig coder.lan` →
+  `.14`, `https://coder.lan/login` → `200` under real DNS, neighbouring rewrites unaffected,
+  and a `pct reboot` proving the unit and the IPv6-off state both come back.
+  **What wasn't verified is stated as such**: the websocket upgrade the IDE depends on needs
+  an authenticated session, which needs the password that was deliberately left alone. A
+  `200` on the login page is not proof the editor loads. Recorded on both the container page
+  and the playbook, with the likely fix if it turns out to need one.
+  One incidental finding: `opencode.lan` was documented as "not proxied — nothing listens",
+  but the Caddyfile has always had a block for it and AdGuard a rewrite; only the backend is
+  missing, so the domain resolves and *then* fails. Corrected the playbook and filed it P4.
+  Also noted throughout: CT113 is the one guest whose DNS name (`coder.lan`) doesn't match
+  its hostname (`code-server`) — requested that way, and flagged in three places so a future
+  reader grepping `pct list` for "coder" doesn't think the container is missing.
+
+## 2026-07-26 (8)
+* **Built [audiobookshelf (CT112)](/containers/audiobookshelf.md) at 192.168.0.26** — an
+  Audiobookshelf server to *play* the library [CT111](/containers/audiobooks.md) *writes*.
+  The two are complementary, not duplicates, and share nothing but the folder; the
+  near-identical names (`audiobooks.lan` vs `audiobookshelf.lan`) are the only real
+  confusion risk, so both pages say so explicitly.
+  The request arrived as `lxc launch ubuntu:20.04 … && curl -fsSL
+  https://audiobookshelf.org/install.sh | bash`, and **none of that survived contact**.
+  `lxc launch` is LXD; this is Proxmox. Ubuntu 20.04 has been EOL since April 2025.
+  And the installer URL **does not exist** — `audiobookshelf.org/install.sh` returns the
+  site's HTML landing page with **HTTP 200**, so `curl -f` doesn't catch it and `bash`
+  would have been fed HTML as root. There is no official piped installer; the supported
+  path is the project's apt repo, which is what was used. Checking the URL took one fetch
+  and was the single most valuable step of the build.
+  Two allocation findings, both from verifying rather than assuming. **`192.168.0.25` is
+  occupied** by an unidentified device (MAC `5c:1b:f4:88:46:08`) sitting inside the
+  documented static range — the obvious next address after CT111's `.24` would have
+  produced a live IP conflict. CT112 took `.26`; the stranger is now a **P3** in
+  [actions.md](/actions.md) and a row in the
+  [ledger](/network/ip-addressing.md). Separately, `.15` is the one free gap in the static
+  block but sits in the historical `.12`/`.14`/`.16` collision zone, so it was left alone
+  and documented rather than quietly consumed.
+  Departed from upstream's install instructions in one more place: the apt key is scoped
+  with `signed-by=` to a keyring in `/usr/share/keyrings/` instead of upstream's
+  `/etc/apt/trusted.gpg.d/`, which would trust the project's key for *every* repo on the
+  box. The hand-written sources line is flagged on the container page as something a future
+  package update could overwrite.
+  Scoped the bind mount **narrower than CT111's**: `mp0` is
+  `/MediaTank/media/Audiobooks` only, not the whole media tree — a player has no need of
+  `Books`/`Comics`/`Movies`/`Porn`. No host `chown` was needed; the directory was already
+  `100000:100112 2775` from CT111's work and the default idmap presents it as `0:112`
+  inside. The deb runs as **uid 999, not root**, so container-root owning the mount bought
+  nothing — read access came from the *other* bits and was verified before being relied on.
+  Put the service user in mapped GID 112 anyway, so that enabling Audiobookshelf's
+  write-metadata-to-library settings later fails on nothing.
+  Wired `audiobookshelf.lan` → `192.168.0.26:13378` through
+  [Caddy](/playbooks/reverse-proxy-caddy.md) (plain `reverse_proxy`; its socket.io traffic
+  needed no `transport` block) and added the 16th
+  [AdGuard rewrite](/network/dns-adguard.md). The AdGuard edit went through the
+  pull/validate/push dance that page mandates — and the validation **earned its keep**: the
+  first run refused to write because the parsed structure differed by more than the new
+  entry. That was the checker being over-strict about list ordering rather than a real
+  breakage, but it caught a genuine mismatch between what was intended and what was
+  produced, on a file that has already crash-looped AdGuardHome once over indentation.
+  Verified end-to-end rather than declared done: HTTP 200 direct, HTTP 200 through Caddy
+  under real DNS, existing `jellyfin.lan`/`audiobooks.lan` still resolving, and a
+  `pct reboot` proving the service returns with the mount ownership and IPv6-off state
+  intact. **First-run setup was deliberately not done** — it creates an admin credential,
+  which isn't something to do on Dave's behalf.
+
+## 2026-07-26 (7)
+* **Finished and verified the local Piper install on [CT111](containers/audiobooks.md),
+  and wrote it down — it had been built earlier the same day but existed nowhere in this
+  bundle.** Picked the work up by reconstructing state from the box rather than from notes:
+  `piper-tts 1.6.0` (OHF-Voice `piper1-gpl`) in its own venv at `/opt/piper1/venv`, an
+  adapter at `/opt/piper/piper`, a `piper-voice` installer and an `audiobook-piper` wrapper
+  in `/usr/local/bin`, five voices on disk, and a two-chapter smoke test that had already
+  rendered successfully at 10:59. So the install was done; the verification and the
+  documentation were not.
+  **Tested the one combination nobody had.** The earlier smoke test ran from the CLI, where
+  `--piper_noise_scale` / `--piper_noise_w_scale` turn out **not to be flags at all** —
+  they exist only in the UI, so on the command line the provider stringifies them into argv
+  as the literal `"None"` (which is what the adapter drops). The UI sends real numbers down
+  a path that had never been exercised. Drove the provider directly with the UI's own
+  slider defaults and got real audio out, 22KB of it — so both argv shapes are now proven,
+  not just the one.
+  **Found and fixed a live bug while checking it.** `audiobook-piper` called `piper-voice`
+  bare to auto-install a missing voice, but `pct exec` runs with
+  `PATH=/sbin:/bin:/usr/sbin:/usr/bin` — **`/usr/local/bin` is not on it**. The call would
+  have died with "command not found" the first time anyone asked for a voice that wasn't
+  already downloaded; it was masked only because every test so far used a pre-installed
+  one. Patched to an absolute path (backup kept alongside) and then *proved* it by
+  deliberately requesting an uninstalled voice — `en_GB-jenny_dioco-medium` downloaded with
+  both its `.onnx` **and** its `.onnx.json`, which is the specific thing the upstream
+  downloader gets wrong, and rendered. Test voice and output removed afterwards.
+  **Measured it instead of guessing: ~20× realtime** (3,540 characters → 227s of audio in
+  11.2s, single stream, CPU). That's roughly **4× Kokoro's** measured 4.5–6×, i.e. a
+  10-hour book in ~30 minutes rather than ~2 hours. Recorded as a three-backend comparison
+  table in the playbook rather than a bare number, since Edge's advantage is parallelism
+  and doesn't compare on the same axis.
+  **Re-settled the Irish question now that there's a second local backend to check.**
+  Piper offers 38 locales but only `en_GB` and `en_US` in English — no `en_IE`, no `ga` —
+  confirmed against the live voice index rather than the UI dropdown that the previous
+  entry rightly distrusted. So the [Edge privacy trade-off](actions.md) is unchanged and
+  stays open at P3; `en_GB-alba-medium` is Scottish and not a substitute.
+  Documented three UI traps that would each have cost an evening: the Piper tab's
+  deployment dropdown **defaults to Docker** (CT111 has no Docker, so it fails outright),
+  the executable-path textbox is **empty** with no default, and the voice dropdowns will
+  cheerfully pick a voice that isn't installed and hand you to the broken downloader.
+  Updated [the playbook](playbooks/epub-to-audiobook.md) (new Piper and speed sections, the
+  Irish section reworked, a new PATH gotcha), [CT111](containers/audiobooks.md) (the
+  three-file layout and the wrapper), and [actions.md](actions.md) — where the real
+  follow-up is that **nobody has actually listened to Piper yet**, so the speed advantage
+  is unbanked until its voice quality is judged against Kokoro's.
+
+## 2026-07-26 (6)
+* **Fixed SSH from Dave's Mac to the host**, closing the P3 item raised one entry earlier
+  and restoring the live-state verification this bundle's working style depends on.
+  Diagnosed before touching anything: `ssh -v` showed the key **was** being offered and
+  the server rejecting it, which ruled out the client, the missing `~/.ssh/config` and the
+  absent agent in one shot — the problem was entirely host-side. Went in through the
+  Proxmox web console (already authenticated as `root@pam`) and found
+  `/root/.ssh/authorized_keys` is a **symlink to `/etc/pve/priv/authorized_keys`** on the
+  pmxcfs mount, holding three keys: the host's own `root@pve` RSA and two ED25519 keys
+  commented `ward@Davids-Mac-mini`. `sshd -T` confirmed `permitrootlogin yes` and
+  `pubkeyauthentication yes`, so no config was at fault.
+  **Neither `ward@Davids-Mac-mini` key matches anything on the Mac** — it holds
+  `zcmOLcbLbSIw…` (`id_ed25519`) and `RF7vr9mXxdSm…` (`pve-backup`), the host has
+  `/ReD2UrmLm7fx4…` and `Ux+rd8C64s7HrOQs4…`. That's the drift: the keys were installed
+  under a previous keypair or a rebuilt machine and never refreshed. Backed the file up to
+  `/root/authorized_keys.bak-20260726`, then appended the Mac's **`id_ed25519`**
+  deliberately — it's the default identity, so plain `ssh root@192.168.0.10` works with no
+  config file. `pve-backup` was left unused; it's a keypair nothing references.
+  Verified the appended line by **fingerprint**, not by reading base64 back — the key was
+  typed through a web terminal, where one mangled character yields a plausible-looking
+  line that silently never authenticates. Then proved it end-to-end from the Mac:
+  `pveversion` over SSH, and finally the two `pct exec 111` checks that had been blocked
+  all session — `edge_tts 7.2.7` present, egress to Microsoft live, and the smoke-test MP3
+  on the pool at 72KB owned `100000:100112` with the setgid group inherited.
+  **The two stale keys were left in place, not deleted** — a backup job or a second device
+  could legitimately hold one, and that's Dave's call, not a unilateral change. Filed as a
+  new **P3** item instead: two unaccounted-for credentials currently have root on the only
+  host in the lab, and removal is now cheap given key auth from the Mac is confirmed.
+  Documented the access path in a new *SSH access* section on
+  [n5-pro](host/n5-pro.md) — including that authorized keys live on pmxcfs rather than in
+  an ordinary local file, which is the part that would send someone editing the wrong
+  path. Updated [actions.md](actions.md) (P3 SSH item → **Resolved**, new stale-keys item).
+
+## 2026-07-26 (5)
+* **Wrote down two loose ends from entry (4) that had only been mentioned in
+  conversation.** Neither is new information — both are now in
+  [actions.md](actions.md) so they survive the session.
+  **SSH from Dave's Mac to the host is broken**, filed at **P3** rather than housekeeping
+  on purpose. `ssh root@192.168.0.10` refuses both keys on the Mac (`id_ed25519`,
+  `pve-backup`, no `~/.ssh/config`, no agent); `pve-backup` existing at all says access
+  was configured once and drifted. Not a lockout — the web UI is authenticated and
+  fine — but it means the live-state verification this bundle's whole working style
+  depends on (`systemctl show`, `ls -ln` a device, `cat` the real config) can't currently
+  be done remotely. The Edge check in entry (4) only landed because the audiobook UI
+  happened to expose a drivable HTTP API, which won't be true next time.
+  **The smoke-test artifact is now recorded alongside the existing `rory-test` one** at
+  P4, as a pair rather than a single stray file — `Audiobooks/edge-ie-smoketest/` doubles
+  as a reference sample of `en-IE-ConnorNeural` if Dave wants to hear the voice before
+  committing a book to it, so it has some value beyond being litter.
+
+## 2026-07-26 (4)
+* **Smoke-tested the Edge/Irish path and it works — which also proved the caveat written
+  an hour earlier in entry (3) had been false when written.** The two `pct exec` checks
+  that entry proposed couldn't be run: SSH from Dave's Mac to `192.168.0.10` refuses both
+  `id_ed25519` and `pve-backup`. Rather than leave it unverified, the test went in through
+  the front door instead — the audiobook UI's own Gradio API on `192.168.0.24:7860`, which
+  *is* reachable. Built a minimal single-chapter EPUB locally, uploaded it via
+  `/gradio_api/upload`, fired the Edge tab-select and language-change handlers to move the
+  server-side state to `en-IE` (skipping that step gets you a Gradio choice-validation
+  error, since it validates the submitted voice against the component's *current* choices),
+  then submitted `process_ui_form`. Result: `✅ Converted chapter 1`, 183 characters in
+  ~1.4s, landing at `/srv/media/Audiobooks/edge-ie-smoketest/0001_Smoke_Test.mp3`. So
+  `edge_tts` is in the venv and [CT111](containers/audiobooks.md) has egress to Microsoft
+  — the only two things that could have blocked the route Dave chose.
+  **The log then showed a full 30-chapter book had already gone through Edge that
+  morning**, finishing 09:33 — so "nothing has been synthesised through it" was wrong, and
+  entry (3) is corrected here rather than edited. Two facts worth more than the correction:
+  that run used **8 concurrent workers** with chapters landing every few seconds, so the
+  earlier guess that Edge would be "network- and rate-limit-bound" versus Kokoro's ~4.5–6×
+  realtime was backwards — Edge parallelises where Kokoro is a single CPU stream, and the
+  UI's **Worker Count defaults to 1**, which throws that away. And it used the UI's
+  *relative* default output path and still landed on the pool, which is the
+  `WorkingDirectory` fix from entry (2) proven on a real book instead of in theory.
+  Also logged into Proxmox via Chrome at `https://proxmox.lan` at Dave's request — the
+  session was already authenticated as `root@pam`, no credentials needed or entered. PVE
+  **9.2.2**, node `pve`, 11 LXC + 2 VMs all running, CT111 up 9h41m; AIVault still reads
+  **64.2%** full, consistent with the reservation issue standing open at P2.
+  Two mistakes worth recording: the polling script re-fired the start trigger, so the
+  smoke test ran **twice** (10:13:09 and 10:14:42, same output overwritten, harmless), and
+  the test directory `Audiobooks/edge-ie-smoketest/` is left on the pool for Dave to bin.
+  Updated [EPUB/PDF to audiobook](playbooks/epub-to-audiobook.md) (the "not yet verified"
+  paragraph replaced with a measured *Edge is verified working on this box* section, and
+  the speed claim corrected) and [actions.md](actions.md) — the P3 verification item moved
+  to **Resolved** the same day it was raised, leaving only the privacy trade-off open.
+
+## 2026-07-26 (3)
+* **Ran down where the `en-IE` voices Dave spotted in the audiobook UI actually come
+  from, and the answer was "nothing to install".** He asked to have them installed; they
+  turned out to be **Microsoft's free unauthenticated Edge cloud voices**, not a model
+  file — no download, no API key, usable the moment you pick them. Four exist:
+  `en-IE-ConnorNeural` and `en-IE-EmilyNeural` (Hiberno-English), plus `ga-IE-ColmNeural`
+  and `ga-IE-OrlaNeural` (actual Gaeilge). Confirmed against Microsoft's own voice list
+  (322 voices, those 4 are the IE ones) and then, more usefully, by driving the running
+  service's `get_edge_voices_by_language` handler on `192.168.0.24:7860` with `en-IE` and
+  watching the Voice dropdown repopulate — the offer is real, not just a list in a repo.
+  **The genuinely new fact is the negative one: neither local backend can do Irish at
+  all.** Checked both live rather than assuming — [Kokoro](containers/docker-stack.md)'s
+  60-odd voices are `af_/am_/bf_/bm_/ef/em/ff/hf/hm/if/im/jf/…` with nothing Irish, and
+  the UI's **Piper** tab (which hadn't been documented as existing) offers 38 locales
+  whose only English entries are `en_GB` and `en_US`. So Edge isn't a preference here,
+  it's the only option, and Dave chose it on that basis.
+  Documented the trade rather than burying it: Edge ships the full text of the book to
+  Microsoft chunk by chunk, which inverts the reason [CT111](containers/audiobooks.md)
+  and Kokoro were built on-box in the first place, and it makes throughput
+  network-bound instead of the measured ~4.5–6× realtime. Also caught that
+  **`/usr/local/bin/audiobook` can't drive Edge** — it hardcodes `--model_name tts-1`,
+  which is meaningless outside Kokoro's OpenAI-compatible endpoint — so the playbook now
+  carries an explicit `main.py --tts edge` invocation, with the warning that output is a
+  *positional* argument there rather than the wrapper's `OUTROOT`, and getting that wrong
+  drops MP3s on the container's 16G rootfs instead of the pool.
+  **Deliberately not claimed as working.** The dropdown answered in 0.7ms, i.e. from a
+  static constant with no network call, so it proves the UI offers the voice and nothing
+  more — whether CT111 has `edge_tts` in its venv and egress to Microsoft is untested,
+  because SSH to the host refused both available keys this session. Logged as a new
+  **P3 — needs verification** section in [actions.md](actions.md) with the two check
+  commands and a single-chapter smoke test to run before committing a full book, rather
+  than writing the playbook as if it were proven.
+  Updated [EPUB/PDF to audiobook](playbooks/epub-to-audiobook.md) (new *Irish voices*
+  section, `edge-tts` tag), [audiobooks (CT111)](containers/audiobooks.md) (the wrapper is
+  Kokoro-only by construction), and [actions.md](actions.md).
+
+## 2026-07-26 (2)
+* **Exposed a web UI for the audiobook pipeline**, after Dave asked whether one existed.
+  It did, and it was already installed — epub_to_audiobook ships a **Gradio UI**
+  (`main_ui.py`) that came in as a dependency of the earlier pip install, so this was
+  wiring rather than installing. Now `audiobook-ui.service` on
+  [CT111](containers/audiobooks.md) (enabled at boot, `0.0.0.0:7860`), reverse-proxied to
+  **`https://audiobooks.lan`** via [Caddy](playbooks/reverse-proxy-caddy.md) with a
+  matching AdGuard rewrite — 15 rewrites now. Same careful path as before: `caddy
+  validate` before reload, and the AdGuard YAML edited on a pulled copy, PyYAML-parsed
+  and `diff`ed (exactly 3 lines) before pushing back.
+  **Two defaults in the UI would have quietly sent work to the wrong place, and both were
+  fixed in the unit file rather than left as documentation.** Its default output path is
+  *relative*, so with the natural `WorkingDirectory=/opt/epub_to_audiobook` every
+  conversion would have landed on the container's 16G rootfs instead of
+  [MediaTank](storage/mediatank.md) — CWD now points at `/srv/media/Audiobooks`, verified
+  by watching the UI actually create `logs/EtA_WebUI_*.log` on the pool with group
+  `100112` correctly inherited. And the UI documents **`OPENAI_API_BASE`** while the
+  `openai` SDK reads **`OPENAI_BASE_URL`**; only the latter had been set, so the UI could
+  plausibly have fallen through to the *real, paid* OpenAI API rather than erroring. Both
+  are now set, and confirmed live in the running process with `systemctl show` rather
+  than trusted from the unit file.
+  Also checked, not assumed, that the UI's fixed OpenAI voice list (`alloy`, `nova`, …)
+  works against Kokoro at all — it does, Kokoro maps the names internally, verified by
+  generating real audio with `voice=alloy`. Remaining UI gotchas documented rather than
+  worked around, since they're per-conversion choices: the TTS tab defaults to **Edge**
+  not OpenAI, the model defaults to `gpt-4o-mini-tts` which fails against Kokoro (must be
+  `tts-1`), and upload is **EPUB-only** so PDFs still need the CLI wrapper.
+  Updated [audiobooks (CT111)](containers/audiobooks.md),
+  [EPUB/PDF to audiobook](playbooks/epub-to-audiobook.md) (new web-UI section plus the
+  SMB upload route via the existing `[media]` share — confirmed `dave` is in group 112 and
+  can genuinely write, by creating a file as that user rather than reading mode bits),
+  [reverse-proxy-caddy](playbooks/reverse-proxy-caddy.md),
+  [dns-adguard](network/dns-adguard.md), [mediatank](storage/mediatank.md), and
+  [containers/index.md](containers/index.md).
+
+## 2026-07-26 (1)
+* **Built an EPUB/PDF → audiobook pipeline**, split across two guests for a specific
+  reason: Kokoro is a network service that never touches the filesystem, while
+  epub_to_audiobook is a batch CLI that needs direct [MediaTank](storage/mediatank.md)
+  access — and a VM can't bind-mount a ZFS dataset. Putting both on docker-stack would
+  have meant a CIFS round-trip back through [nas](containers/nas.md) for no gain.
+  **Kokoro-FastAPI** (`ghcr.io/remsky/kokoro-fastapi-cpu`, 5.42GB) added as a four-line
+  service in docker-stack's existing `/opt/stack/docker-compose.yml` (backed up first),
+  serving an OpenAI-compatible TTS API on `192.168.0.14:8880`; brought up with
+  `docker compose up -d kokoro` so the other four containers were left alone — verified
+  after the fact that caddy and n8n still showed `Up 6 days`. **CPU-only on purpose**:
+  Kokoro ships no Vulkan build, its ROCm image is experimental and x86-only against a
+  `gfx1150` this homelab already found flaky for ROCm, and the iGPU is already shared
+  between ollama and jellyfin. Measured **~4.5–6× realtime**, which makes a 10-hour book
+  about a 2-hour job — the GPU wasn't worth the fight.
+  **New [audiobooks (CT111)](containers/audiobooks.md)** at `192.168.0.24` (Debian 13,
+  4 cores/4GB/16G rootfs) running epub_to_audiobook in a venv, plus calibre 8.5.0 for the
+  PDF→EPUB step (epub_to_audiobook takes EPUB only — PDF support is entirely calibre's,
+  and is lossy on multi-column or scanned documents). Built to
+  [fleet policy](network/ip-addressing.md) from the start — static IP, AdGuard DNS,
+  IPv6-off sysctl at provisioning time — rather than drifting and being fixed later like
+  most of the fleet was on 2026-07-25. `features: nesting=1` turned out to be required,
+  not cosmetic: `pct create` warns that Debian 13's systemd 257 needs it.
+  Wrapped the whole thing in `/usr/local/bin/audiobook`, which bakes in the two flags
+  that are easy to lose: `--model_name tts-1` (Kokoro fails on the tool's default model
+  name) and `--no_prompt` (without it the tool blocks on an interactive `input()` and
+  dies `EOFError` under any automation). Added `kokoro.docker.lan` to
+  [Caddy](playbooks/reverse-proxy-caddy.md) and AdGuard, validating the Caddyfile with
+  `caddy validate` before reloading and parsing the AdGuard YAML with PyYAML before
+  restarting — that file has crash-looped the service over indentation before, so the
+  edit was done on a pulled copy and `diff`ed (exactly 3 lines) rather than `sed`ed in
+  place. Verified end-to-end rather than assuming: `/health` 200, real MP3 out of
+  `/v1/audio/speech`, then a full chapter of an actual book from the library rendered to
+  **883s of 128kbps audio across 9 chunks with zero errors**, landing on MediaTank as
+  `100000:100112` — group correctly inherited via the setgid bit on the new
+  `media/Audiobooks` directory, which is the part that would have silently broken
+  Jellyfin's access if missed. Also confirmed the four unrelated `.lan` domains still
+  resolve correctly after the AdGuard restart.
+  Two things surfaced along the way and were **flagged rather than fixed**: AIVault has
+  gone from 90.6G to 294G used since yesterday's doc, which turned out to be entirely a
+  `refreservation` — `vm-103-disk-0` is thickly provisioned (`sparse 0`) and holds 203G
+  against 19.7M of actual data, capping the Ollama model store at 164G; and the earlier
+  "nohup inside `pct exec`" trick for long jobs silently doesn't work (the process is
+  killed with the exec session — the first provisioning run never ran at all), so
+  `systemd-run` is now the documented way to detach.
+  New pages: [audiobooks (CT111)](containers/audiobooks.md) and
+  [EPUB/PDF to audiobook](playbooks/epub-to-audiobook.md). Updated
+  [containers/index.md](containers/index.md),
+  [docker-stack](containers/docker-stack.md), [ip-addressing](network/ip-addressing.md),
+  [dns-adguard](network/dns-adguard.md),
+  [reverse-proxy-caddy](playbooks/reverse-proxy-caddy.md),
+  [playbooks/index.md](playbooks/index.md), [mediatank](storage/mediatank.md),
+  [aivault](storage/aivault.md), [host/n5-pro.md](host/n5-pro.md),
+  [index.md](index.md), and [actions.md](actions.md) (1 new P2, 2 new P4).
+
+## 2026-07-25 (18)
+* **Brought the remaining plan decisions back to Dave rather than assuming**, then acted
+  on what came back. Four questions, four different outcomes:
+  **BIOS UMA (32GB vs 24GB): revisit later**, no BIOS change — noted in actions.md, left
+  open.
+  **docker-stack's idle 200G AIVault disk: wire it in.** Executed the migration live:
+  stopped `postgres`/`qdrant` containers for consistency, wiped the stale LVM signature on
+  `virtio1`, `mkfs.ext4` + mounted at `/mnt/aivault`, `rsync -aHAX`'d `/data/postgres` and
+  `/data/qdrant` onto it, verified **byte-identical** with `diff -rq` before touching
+  anything original, renamed originals aside as a safety net
+  (`/data/{postgres,qdrant}.old-20260725` — not yet deleted), then bind-mounted the new
+  disk back onto the original `/data/postgres` and `/data/qdrant` paths via `/etc/fstab`.
+  `/opt/stack/docker-compose.yml` needed **zero edits** — the bind-mount source paths the
+  compose file references never moved, only what backs them did. Restarted both
+  containers and verified properly, not just "container started": Postgres's own log
+  shows it recognized the existing database ("appears to contain a database; Skipping
+  initialization") and reached "ready to accept connections"; Qdrant came up clean on
+  6333/6334; n8n (which depends on Postgres, never stopped) answered `200` throughout,
+  confirming the dependency chain wasn't disrupted.
+  **`MediaTank/Media` vs `media`: investigate before touching.** Checked
+  [nas](containers/nas.md)'s `smb.conf` first — only one share exists, `[media]` →
+  `/srv/media` (the lowercase, active one). `Media` isn't exposed over Samba at all right
+  now, so this was never a live collision, just dormant capacity. Its content (dated
+  2026-07-04, untouched since, named like typical downloaded releases) reads as an
+  orphaned pre-reorganization landing spot rather than the Mac backup first assumed. Dave
+  chose to leave both directories as-is.
+  **Reliability posture (AdGuard DNS SPOF, no ZFS redundancy): confirmed accepted
+  tradeoffs**, no changes — just wanted to check these weren't oversights before leaving
+  them as standing documented facts.
+  Updated [storage/aivault.md](storage/aivault.md),
+  [containers/docker-stack.md](containers/docker-stack.md),
+  [storage/mediatank.md](storage/mediatank.md), and [actions.md](actions.md) (2 items
+  resolved, 2 new small P4 cleanup notes for the obsolete AIVault datasets and the
+  `.old-20260725` safety-net copies).
+
+## 2026-07-25 (17)
+* **Cleared the plan's three "no decision needed" housekeeping items** — all had been
+  confirmed dead/inert during earlier audits, so executed directly rather than re-asking:
+  (1) Removed the leftover NAT-over-TB plumbing: `pct set 100 -delete net1` plus the
+  `vmbr1` stanza dropped from the host's `/etc/network/interfaces` (backed up first to
+  `.bak-20260725`), applied live via `ifreload -a`. Verified `vmbr1` no longer exists, no
+  `eth1` inside [nas](containers/nas.md), and confirmed main connectivity (`vmbr0`, `.lan`
+  DNS resolution) unaffected — the "nic0 not recognized" warning during `ifreload` is the
+  pre-existing, already-documented Thunderbolt hotplug behavior, not a regression. (2)
+  Deleted the stray `DataPool/subvol-107-disk-0@test-snap` snapshot. (3) Recursively
+  destroyed `MediaTank/.system` (6 tiny inert TrueNAS-middleware datasets, all confirmed
+  `mountpoint: legacy` i.e. never auto-mounted) — pool root now only holds the real
+  content (`Media`, `media`, `backups`).
+  Updated [containers/nas.md](containers/nas.md),
+  [network/thunderbolt-link.md](network/thunderbolt-link.md),
+  [storage/mediatank.md](storage/mediatank.md), and [actions.md](actions.md) (3 items
+  moved to Resolved).
+
+## 2026-07-25 (16)
+* **Started executing the approved homelab optimisation plan** (`/plan` →
+  `/Users/ward/.claude/plans/fluffy-stirring-beacon.md`), beginning with the two
+  "ready to execute, no decision needed" items.
+  **Reconciling the host RAM figure surfaced a bigger finding than expected.**
+  `free -h` confirmed 62Gi total (matching the lower disputed figure) while `dmidecode -t
+  memory` confirmed 96GB physically installed (2×48GB DIMMs) — both were right. Root
+  cause, found via `dmesg | grep VRAM`: the iGPU's BIOS UMA frame buffer reserves **32GB**
+  for itself before the OS ever sees it — not the "2GB" `playbooks/gpu-passthrough-ollama-vulkan.md`
+  claimed. That doc's own recommended sweet spot is 24GB; 32GB was already flagged in the
+  same doc as "defensible but marginal past 24" *before* anyone had actually checked the
+  live value. Corrected the playbook (was stale, not just imprecise) and logged the
+  32GB-vs-24GB question as a new P2 decision — reducing it would reclaim 8GB for the rest
+  of the fleet, but changing it needs a physical BIOS reboot only Dave can do.
+  **Built the first Grafana dashboard** ("N5 Pro Host Overview": host CPU/memory/uptime,
+  per-guest CPU/memory, storage pool usage %, sourced from real `pve_*` metric names and
+  label formats confirmed live against `pve-exporter` first, not guessed). Hit two real
+  gotchas back to back, both stemming from the same root pattern: **this Grafana 13.1.0
+  build's actual runtime paths come from `cfg:`/`GF_PATHS_*` overrides on the live
+  process, not from `grafana.ini`, and tools invoked without matching those overrides
+  silently operate on the wrong location.** (1) Classic file-based dashboard provisioning
+  (`/etc/grafana/provisioning/dashboards/*.yaml`) produced zero errors and zero dashboards
+  — extensive debugging (permissions, YAML/JSON validity, ownership, AppArmor, provider
+  config location) all checked out clean before concluding this build's newer
+  `dashboard.grafana.app` unified-storage backend has made the classic provisioner (and
+  the `dashboard` SQL table used to verify it) effectively vestigial in this version.
+  Switched to the HTTP API (`POST /api/dashboards/db`) instead — worked immediately once
+  tried. (2) No known Grafana credentials existed (not the `admin`/`admin` default), so
+  `grafana cli admin reset-admin-password` was needed to unblock the API approach — its
+  first run silently touched the *wrong* database (defaults to a path under
+  `/usr/share/grafana` unless given the same `GF_PATHS_DATA` etc. the systemd service
+  uses) and had zero real effect despite reporting success. Fixed by passing the matching
+  environment variables. New temporary admin password: `N5proTemp2026xyz` — logged as a
+  P4 reminder for Dave to change, not something to do on his behalf.
+  Verified the whole chain end-to-end rather than trusting any single success message:
+  `GET /api/search` shows the dashboard indexed, and querying the exact panel expression
+  through Grafana's own datasource proxy returned live current data.
+  Updated [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md),
+  [containers/grafana.md](containers/grafana.md), and [actions.md](actions.md) (one item
+  resolved into an explanation + new P2 decision, one new P4 reminder added).
+
+## 2026-07-25 (15)
+* **Network config audit**, at Dave's request following the storage audit. Checked the
+  host's own `/etc/network/interfaces`, `/etc/pve/firewall/`, `/etc/pve/datacenter.cfg`,
+  `ip route show`, and `tailscale status` against what's documented.
+  **Found a second, undocumented bridge — `vmbr1`** (`bridge-ports none`, never attached
+  to any physical NIC) — and traced it to an actual user: `grep -rl vmbr1
+  /etc/pve/lxc/` found [nas (CT100)](/containers/nas.md), which has a second NIC
+  (`net1`, `10.10.10.4/24`) sitting on it. This turned out not to be a new mystery: it's
+  the leftover, never-cleaned-up plumbing from the NAT-over-TB experiment that
+  `network/thunderbolt-link.md` already documents as "tried and abandoned as unreliable"
+  — just the docs never mentioned the dead artifact was still configured. Confirmed
+  genuinely dead before writing it up: interface is up (`brctl show vmbr1` lists only
+  nas's own veth, no uplink) but essentially silent (290B rx / 11KB tx total, just ARP
+  noise). Logged as a safe, low-priority cleanup in actions.md rather than removing it
+  unprompted.
+  **Second finding**: `/etc/pve/firewall/` is completely empty (no `cluster.fw`,
+  no `host.fw`, no per-guest `.fw` files) and `datacenter.cfg` has no firewall enable
+  directive — meaning the Proxmox firewall subsystem isn't active anywhere on this host,
+  despite four guests (nas, jellyfin, ollama, tailscale) carrying a `firewall=1` flag on
+  their `net0`. That flag does nothing without the subsystem enabled. Not a bug — this is
+  a common minimal-homelab posture (trust the LAN/router boundary) — but worth stating
+  explicitly rather than let the `firewall=1` flags imply protection that isn't there.
+  Documented on the host page.
+  **Third finding**: `tailscale status` on CT105 shows 5 tailnet members, not the 4
+  personal-device count implied by the existing docs — an iPad (`ipad155`) that was never
+  listed alongside the Mac Mini, MacBook Pro, and iPhone. Added it.
+  **Confirmed clean otherwise**: `/etc/network/interfaces.d/` only holds an empty,
+  benign Proxmox SDN placeholder file; routing table is exactly what's expected (default
+  route + local subnet via `vmbr0`, no static routes, no VLANs); `vmbr0`/`nic0` configs
+  match documented values exactly.
+  Updated [containers/nas.md](containers/nas.md),
+  [network/thunderbolt-link.md](network/thunderbolt-link.md),
+  [host/n5-pro.md](host/n5-pro.md),
+  [playbooks/tailscale-subnet-router-exit-node.md](playbooks/tailscale-subnet-router-exit-node.md),
+  and [actions.md](actions.md).
+
+## 2026-07-25 (14)
+* **Storage audit**, at Dave's request following the fleet-services audit. Checked
+  `zpool status` (all three pools), `zfs list -t all` (every dataset and snapshot), and
+  `/etc/pve/storage.cfg` against what's documented. Found the biggest thing wrong in this
+  whole review so far: **the docs' claim that docker-stack's Postgres/Qdrant data lives on
+  AIVault was false.** Traced it properly — `AIVault:vm-103-disk-0` (200G) is attached to
+  the VM as `virtio1`, but `lsblk` shows it as a bare `LVM2_member` with no volume group
+  ever activated, and `/etc/fstab` has no entry for it; `pvs`/`vgs` inside the guest
+  confirm only the root disk's VG exists. The real data (`docker inspect`'s bind mounts:
+  `/data/postgres` → `/var/lib/postgresql/data`, `/data/qdrant` → `/qdrant/storage`) sits
+  on the **root disk** (`DataPool:vm-103-disk-1`) instead, as plain directories — and it's
+  tiny (`du -sh`: 47M and 20K). Two small AIVault datasets (`AIVault/postgres`,
+  `AIVault/models`, 96K each) are orphaned leftovers from whatever the original plan was —
+  a VM can't consume a host dataset via bind-mount the way an LXC does, so however this was
+  set up, it was never actually wired in. Corrected the AIVault, DataPool, and
+  docker-stack pages rather than leave the false claim standing, and raised the actual fix
+  (wire the disk in vs reclaim it) as a P2 decision rather than doing either unilaterally.
+  **Second real finding**: `MediaTank/Media` and `MediaTank/media` are two genuinely
+  different directories differing only by case — `Media` (132G, uid 3000, `.DS_Store`,
+  `Movies/`, looks Mac-originated) vs `media` (1.28T, uid `100103:100112` matching the
+  unprivileged-LXC mapped-UID pattern, `Audio/`/`Books/`/`Comics/` — what containers
+  actually read). Flagged as a P2 since SMB is typically case-insensitive on Mac/Windows
+  clients even though ZFS is case-sensitive underneath — real collision risk, not touched
+  without Dave's input on which one's disposable.
+  **Smaller finds, documented as P4 housekeeping, not urgent**: a stray manual snapshot
+  (`DataPool/subvol-107-disk-0@test-snap`, opencode's rootfs, Jul 12, not part of any
+  backup routine); `MediaTank/.system/*` — inert TrueNAS-middleware datasets left over
+  from the original import; all three pools have `zpool upgrade` available but unrun.
+  **Confirmed healthy** otherwise: all three pools `ONLINE`, no errors, automatic scrubs
+  running clean (last Jul 12), capacity all checks out against the documented drive sizes
+  (AIVault 472G/90.6G used, DataPool 928G/30.4G used, MediaTank 5.45T/1.41T used) — though
+  all three are **single-disk with no redundancy**, a fact the docs implied but never
+  stated outright, now made explicit. Updated
+  [storage/aivault.md](storage/aivault.md), [storage/datapool.md](storage/datapool.md),
+  [storage/mediatank.md](storage/mediatank.md), [storage/index.md](storage/index.md),
+  [containers/docker-stack.md](containers/docker-stack.md), and [actions.md](actions.md).
+
+## 2026-07-25 (13)
+* **Fleet-wide audit for anything else undocumented**, at Dave's request following the
+  Caddy discovery. Checked every LXC's listening ports (`ss -tlnp`) and running services
+  (`systemctl list-units --type=service --state=running`, filtered down to non-boilerplate
+  units) against what's documented — all matched except one: **`avahi-daemon` running on
+  [sabnzbd (CT108)](containers/sabnzbd.md)**, broadcasting mDNS (`sabnzbd.local`), not
+  mentioned anywhere and not present on any other guest. `/etc/avahi/services/` is empty
+  (just default hostname announcement, no custom service records) — looks like a side
+  effect of however SABnzbd was originally installed, not a deliberate choice. Documented,
+  not treated as a bug (nothing indicates it's causing a problem).
+  Also explicitly closed two open questions rather than leaving them assumed: confirmed
+  `docker ps -a` on docker-stack shows exactly the 4 known containers (caddy, n8n,
+  postgres, qdrant) — no stopped or hidden ones; confirmed no other LXC runs Docker at all
+  (`systemctl is-active docker` → `inactive` on all 10, docker-stack is genuinely the only
+  Docker host); confirmed home-assistant has zero Supervisor add-ons installed (`ha addons
+  list` → `addons: []`) — it's core-only, nothing like ESPHome or Node-RED running
+  alongside it, closing an open question about what that VM actually manages.
+  Updated [containers/sabnzbd.md](containers/sabnzbd.md) and
+  [containers/home-assistant.md](containers/home-assistant.md).
+
+## 2026-07-25 (12)
+* **Built the `https://jellyfin.lan` reverse-proxy fix Dave asked for**, after diagnosing
+  the original report (Dave: "https://jellyfin.lan is not resolving") as actually a missing
+  port/protocol, not a DNS failure — `jellyfin.lan` resolved fine, but nothing listened on
+  `443` (Jellyfin only serves `8096`). Dave asked to set up a reverse proxy properly rather
+  than just tell him to add the port to the URL. Initial decision (asked, not assumed):
+  nginx in a new dedicated LXC, HTTPS via an internal CA.
+  **Before building it**, checked docker-stack (VM103) for backend ports and found
+  something nobody knew was there: `docker ps` showed a running `stack-caddy-1` (`caddy:2`)
+  container listening on `80`/`443`. Read its Caddyfile
+  (`docker exec stack-caddy-1 cat /etc/caddy/Caddyfile`) — it already had `tls internal`
+  blocks reverse-proxying jellyfin, openwebui, ollama, opencode, sabnzbd, adguard, grafana,
+  proxmox, n8n, and qdrant, none of it documented anywhere in this bundle. Tested it
+  directly (`curl --resolve jellyfin.lan:443:192.168.0.14 https://jellyfin.lan/` → `302`) —
+  fully working, just disconnected from DNS. Went back to Dave with this before proceeding
+  further, since it invalidated the "new nginx LXC" decision; he chose to use the existing
+  Caddy instead of building a redundant second proxy.
+  **Wired it up**: added a `sillytavern.lan` block to `/data/caddy/Caddyfile` (the one
+  service missing from the existing config, presumably because it predates CT120's
+  discovery), reloaded Caddy live (`docker exec stack-caddy-1 caddy reload`, zero
+  downtime). Then repointed AdGuard's rewrites for the 9 Caddy-covered domains (ollama,
+  jellyfin, openwebui, opencode, sabnzbd, adguard, proxmox, grafana, sillytavern) from
+  each service's own IP to `192.168.0.14`, and added a new `qdrant.docker.lan` rewrite
+  (Caddy already had the block; AdGuard never had a matching entry). Backed up
+  `AdGuardHome.yaml` first.
+  **Hit two real bugs applying this**: (1) AdGuardHome crash-looped after the edit
+  (`go-yaml load error ... did not find expected key`) — root cause was a 2-space
+  indentation mismatch in a manually-inserted YAML block; the file's actual convention is
+  4-space `- domain:` / 6-space `answer:`/`enabled:`, not the 2/4 it looks like at a
+  glance. Measured precisely with `awk 'match($0,/^ */){print RLENGTH}'` against a known-
+  good sibling entry to fix it for real, rather than keep guessing. (2) SABnzbd returned
+  `403` for `sabnzbd.lan` through the proxy — its `host_whitelist` setting in
+  `sabnzbd.ini` only allowed the bare `sabnzbd` hostname; added `sabnzbd.lan` and
+  restarted `sabnzbdplus@root.service`.
+  **Verified end-to-end** for all 8 newly-proxied domains: real DNS resolution via
+  `dig @192.168.0.20`, then `curl` through the resolved IP — all returned expected
+  `200`/`302` codes, including `proxmox.lan` (websocket-sensitive console UI, has its own
+  transport block in the Caddyfile already).
+  Wrote up the whole subsystem in a new playbook since none of it existed before:
+  [playbooks/reverse-proxy-caddy.md](playbooks/reverse-proxy-caddy.md) (full domain table,
+  how to add a new domain, both gotchas). Updated
+  [containers/docker-stack.md](containers/docker-stack.md) (Caddy wasn't mentioned at all),
+  [network/dns-adguard.md](network/dns-adguard.md),
+  [playbooks/index.md](playbooks/index.md),
+  [playbooks/troubleshooting-gotchas.md](playbooks/troubleshooting-gotchas.md), and
+  [actions.md](actions.md) (resolved, plus a new P4 reminder that Dave still needs to trust
+  Caddy's CA on his own devices — deliberately left to him, not something to script).
+
+## 2026-07-25 (11)
+* **Closed the IPv6 P2 item**, at Dave's request to check it after the DNS audit. Confirmed
+  live state first: `ip -6 addr show eth0 scope global` via `pct exec` across all 10 LXCs
+  plus `qm guest exec` for the 2 VMs. 9 guests (nas, jellyfin, ollama, docker-stack,
+  opencode, sabnzbd, adguard, grafana, sillytavern) had global IPv6; tailscale, openwebui,
+  and home-assistant (fixed earlier today) didn't. Root-caused *why* openwebui and
+  tailscale were clean: openwebui has `/etc/sysctl.d/99-disable-ipv6.conf`
+  (`net.ipv6.conf.{all,default,lo}.disable_ipv6 = 1`), commented "set by
+  community-scripts" — it was the only guest actually provisioned with IPv6 disabled at
+  creation; tailscale's absence of global IPv6 is unrelated (its own network manager, not
+  this sysctl). Unlike the DNS case, there was no conflicting documented policy here — the
+  "IPv6 off" intent was consistent everywhere, just never enforced on 9 of 12 guests — but
+  it's still a real fleet-wide config change, so raised it as a decision anyway rather than
+  assume. Dave chose: disable it fleet-wide. Replicated openwebui's sysctl file verbatim on
+  the other 8 LXCs and on docker-stack (VM, via `qm guest exec`). Tested on nas (CT100)
+  first: `sysctl -p` applied it **live**, no reboot needed — `ip -6 addr show eth0` went
+  empty immediately (different from the DNS/IP fixes, which needed a reboot to take
+  effect). Rolled out to the remaining 7 LXCs the same way, then docker-stack. Verified: all
+  9 previously-affected guests show zero global IPv6 addresses, and confirmed docker-stack's
+  IPv4 (`192.168.0.14/24` on `enp6s18`) is unaffected. Updated
+  [network/ip-addressing.md](network/ip-addressing.md),
+  [host/n5-pro.md](host/n5-pro.md), [containers/index.md](containers/index.md) (also fixed
+  a stale "blank DNS fields" reference there and a stale docker-stack DNS note in
+  ip-addressing.md, both superseded by entry (10)'s DNS fix), and [actions.md](actions.md).
+
+## 2026-07-25 (10)
+* **Audited the rest of the fleet for the same DHCP/DNS drift found in sillytavern**, at
+  Dave's request. IP addressing checked out — `pct config` confirmed all 9 remaining LXCs
+  (nas, jellyfin, ollama, tailscale, openwebui, opencode, sabnzbd, adguard, grafana)
+  already use static `net0` entries, no DHCP surprises there. DNS was a different story:
+  `pct exec <id> -- cat /etc/resolv.conf` on each showed 7 of them (nas, jellyfin, ollama,
+  openwebui, opencode, sabnzbd, grafana) pointing at the router (`192.168.0.1`), not
+  AdGuard — same symptom as sillytavern, docker-stack, and home-assistant before their
+  fixes. But this time it wasn't obvious drift: `network/dns-adguard.md` (written
+  2026-07-19, before any of today's fixes) explicitly documents "containers inherit DNS
+  from the host... which is what you want — the AdGuard path is for tailnet clients," and
+  confirmed the Proxmox host's own `/etc/resolv.conf` is also `192.168.0.1` — so those 7
+  actually matched the *original documented design*, while the 3 already "fixed" guests
+  had quietly deviated from it without an explicit policy call. Surfaced the conflict to
+  Dave instead of guessing either direction; decision: **guests should use AdGuard**,
+  making the 3 the new standard and the 7 the ones needing a fix. Applied
+  `pct set <id> -nameserver 192.168.0.20` to all 7 — confirmed the config saves
+  immediately but does **not** take effect on a running container, only after reboot.
+  Asked Dave before rebooting since these are actively-used shared services (NAS/Samba,
+  Jellyfin, Ollama, SABnzbd downloads, plus openwebui/opencode/grafana); got the OK to
+  reboot all 7 now, did so one at a time via `pct reboot`. Verified after: all 7 show
+  `nameserver 192.168.0.20` in `/etc/resolv.conf` and `pct list` shows every guest back to
+  `running`. [adguard (CT109)](containers/adguard.md) and
+  [tailscale (CT105)](containers/tailscale.md) correctly excluded (self-reference /
+  MagicDNS respectively). Rewrote the policy statement in
+  [network/dns-adguard.md](network/dns-adguard.md) (was actively wrong as of this fix) and
+  updated [network/ip-addressing.md](network/ip-addressing.md) and
+  [actions.md](actions.md) to match.
+
+## 2026-07-25 (9)
+* **Fixed sillytavern's (CT120) DHCP/DNS drift**, closing the P2 item raised in entry (8).
+  Decided to convert to static rather than accept the drift risk, matching the fleet
+  convention and the home-assistant precedent. Since sillytavern is an LXC (not a VM),
+  networking is host-managed, so the fix was done at the Proxmox level rather than inside
+  the guest: `pct set 120 -net0
+  name=eth0,bridge=vmbr0,hwaddr=BC:24:11:4A:51:E9,ip=192.168.0.22/24,gw=192.168.0.1,type=veth
+  -nameserver 192.168.0.20` (kept the existing MAC and the `.22` address it already held).
+  The live hotplug step errored (`ipv4: Address already assigned` — expected, since the
+  DHCP lease was still active on the interface at that moment) but `pct config 120`
+  confirmed the config saved correctly regardless; `pct reboot 120` applied it cleanly.
+  Verified after reboot: `ip -4 addr show eth0` shows the static `.22/24` with no DHCP
+  lease markers, `/etc/resolv.conf` now points at AdGuard (`192.168.0.20`, was the router),
+  `sillytavern.service` came back `active`, and its web UI answers `200` on port 8000.
+  Updated [containers/sillytavern.md](containers/sillytavern.md),
+  [network/ip-addressing.md](network/ip-addressing.md), and [actions.md](actions.md).
+
+## 2026-07-25 (8)
+* **Filled in the grafana (CT110) and sillytavern (CT120) doc stubs**, closing the P4 item
+  from [actions.md](actions.md). Used the Proxmox web UI's node Shell (`https://proxmox.lan:8006`
+  → node `pve` → Shell) to run `pct exec` against both containers directly — no SSH needed.
+  **grafana**: Grafana 13.1.0 (port 3000) plus a co-located Prometheus 2.42.0 instance;
+  confirmed via its own `data_source`/`dashboard` tables (queried with `python3`'s sqlite3
+  module, since `sqlite3` CLI isn't installed) that it has exactly one datasource
+  (Prometheus, localhost) and zero saved dashboards. Prometheus scrapes itself, its own
+  node-exporter, and `pve-exporter.service` (a manually-installed venv at
+  `/opt/pve-exporter`, not a Debian package) which proxies the actual N5 Pro host
+  (`192.168.0.10`) via a dedicated `prometheus@pve` API user — all three targets healthy.
+  **sillytavern**: runs natively via `systemd` (`sillytavern.service`, Node v22.23.1,
+  `npm run start`), not Docker — confirmed by `nesting=0` in `pct config 120`. Connects
+  directly to [ollama (CT102)](containers/ollama.md) at `192.168.0.13:11434`
+  (`hf.co/mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest` for chat, `mxbai-embed-large` for
+  embeddings), bypassing [openwebui (CT106)](containers/openwebui.md) entirely. While there,
+  **found a new issue**: `pct config 120` shows `net0: ...,ip=dhcp` — sillytavern's
+  `192.168.0.22` is a DHCP lease that's simply held steady, not a static assignment like the
+  rest of the fleet. Logged as a new P2 in [actions.md](actions.md), same class of risk as
+  the home-assistant DHCP issue fixed earlier today. Checked for leftover ZFS/LVM volumes
+  in the CT111–119 range to explain the numbering jump to CT120 — found none, so that
+  remains unconfirmed. Updated [containers/grafana.md](containers/grafana.md),
+  [containers/sillytavern.md](containers/sillytavern.md),
+  [network/ip-addressing.md](network/ip-addressing.md),
+  [containers/index.md](containers/index.md), and [actions.md](actions.md).
+
+## 2026-07-25 (7)
+* **Fixed AdGuard's broken rewrite table** — the P0 item from [actions.md](actions.md).
+  7 of 12 domains (`jellyfin.lan`, `openwebui.lan`, `opencode.lan`, `sabnzbd.lan`,
+  `adguard.lan`, `proxmox.lan`, `grafana.lan`) were all miscopied to answer
+  `192.168.0.14` (docker-stack) instead of their own IPs. Backed up
+  `/opt/AdGuardHome/AdGuardHome.yaml` to `.bak-20260725` on
+  [adguard (CT109)](containers/adguard.md) first, then via `pct exec 109` ran a `sed`
+  with one `-e` per domain, each anchored to that domain's own block
+  (`/domain: X\.lan/{n;s/answer:.*/answer: Y/}`) so `n8n.docker.lan` (legitimately
+  `.14`) and the already-correct entries couldn't be touched by accident. Restarted
+  `AdGuardHome` (`systemctl restart`, came back `active`), then verified all 12 domains
+  live with `dig @192.168.0.20` — everything resolves correctly now. Updated
+  [DNS via AdGuard](network/dns-adguard.md) and [actions.md](actions.md).
+
+## 2026-07-25 (6)
+* **Fixed docker-stack's (VM103) DNS** to point at AdGuard, closing the P3 item from
+  [actions.md](actions.md). Patched `/etc/netplan/50-cloud-init.yaml` via
+  `qm guest exec 103` (QEMU guest agent, no SSH needed) with a `sed` precise enough to
+  hit only the unquoted nameserver line and leave the quoted gateway/route line alone,
+  then `netplan apply`. Verified via `resolvectl status enp6s18`: DNS Servers now
+  `192.168.0.20`.
+* **While verifying, found a much bigger pre-existing bug**: `jellyfin.lan` resolved to
+  docker-stack's own IP instead of jellyfin's. Traced it to AdGuard itself — read
+  `/opt/AdGuardHome/AdGuardHome.yaml` via `pct exec 109` and found **7 of 12 domain
+  rewrites miscopied to `192.168.0.14`** (jellyfin, openwebui, opencode, sabnzbd,
+  adguard, proxmox, grafana `.lan`), evidently a copy-paste error. Also discovered the
+  Proxmox host's own LAN IP (`192.168.0.10`, via `ip -4 addr show vmbr0`), previously
+  undocumented. Logged as a new **P0** in [actions.md](actions.md) — did **not** fix it,
+  since it's a bigger change than what was asked (affects 7 tailnet-wide hostnames) and
+  needs explicit go-ahead. Updated
+  [docker-stack (VM103)](/containers/docker-stack.md),
+  [DNS via AdGuard](/network/dns-adguard.md), and [actions.md](actions.md).
+
+## 2026-07-25 (5)
+* **Checked docker-stack's (VM103) IP at the source** — the P3 item in
+  [actions.md](actions.md). Read `/etc/netplan/50-cloud-init.yaml` via
+  `qm guest exec 103` (QEMU guest agent, no SSH needed): `192.168.0.14/24` is hardcoded,
+  no `dhcp4`, so it's **confirmed static**, not DHCP fallout — closed that item. Found a
+  smaller one in its place: DNS points at the router (192.168.0.1), not AdGuard
+  (192.168.0.20), same pattern home-assistant had but lower urgency since the address
+  itself doesn't drift. Updated
+  [docker-stack (VM103)](/containers/docker-stack.md),
+  [IP addressing](/network/ip-addressing.md), and [actions.md](actions.md).
+
+## 2026-07-25 (4)
+* **Fixed home-assistant's DHCP/DNS issue** (the P1 item in [actions.md](actions.md)).
+  Verified `192.168.0.23` was free (`ping` from the host, 100% loss), then ran
+  `ha network update enp6s18 --ipv4-method static --ipv4-address 192.168.0.23/24
+  --ipv4-gateway 192.168.0.1 --ipv4-nameserver 192.168.0.20 --ipv6-method disabled` from
+  the HAOS CLI via the Proxmox console. Verified after: `network info` shows
+  `method: static`, IPv6 `method: disabled`; `.23` reachable and old `.213` lease gone.
+  Updated [home-assistant (VM104)](/containers/home-assistant.md),
+  [IP addressing](/network/ip-addressing.md), [containers/index.md](containers/index.md),
+  and closed the item out in [actions.md](actions.md).
+
+## 2026-07-25 (3)
+* **Added [actions.md](actions.md)**: prioritised, standing list of confirmed issues and
+  follow-ups from the audit (home-assistant DHCP/DNS fix, IPv6 policy decision, disputed
+  RAM figure, unconfirmed docker-stack IP mode, grafana/sillytavern doc stubs, and the
+  pre-existing DHCP pool overlap). Linked from [index.md](index.md).
+
+## 2026-07-25 (2)
+* **Root-caused the home-assistant DHCP question**: Queried `ha> network info` directly
+  in the HAOS console (no login required). Confirmed `enp6s18` is set to `method: auto`
+  for both IPv4 and IPv6 — it's a genuine DHCP lease, not a static assignment, and its
+  nameserver is the router (192.168.0.1) rather than AdGuard. Updated
+  [home-assistant (VM104)](/containers/home-assistant.md) and
+  [IP addressing](/network/ip-addressing.md) with the confirmed root cause and the fix
+  (switch to static via the HAOS CLI or web UI) — **not yet applied**, left for Dave to
+  schedule since it's a live change to the household's smart-home VM.
+
+## 2026-07-25 (1)
+* **Live audit against Proxmox UI**: Compared this bundle directly against the running
+  Proxmox instance at `proxmox.lan`. Added two previously-undocumented guests found
+  running — [grafana (CT110)](/containers/grafana.md) and
+  [sillytavern (CT120)](/containers/sillytavern.md) — bringing the total to 12. Resolved
+  the [jellyfin (CT101)](/containers/jellyfin.md) IP-verification flag (confirmed
+  192.168.0.12). Filled in previously-unknown IPs for
+  [docker-stack (VM103)](/containers/docker-stack.md) (192.168.0.14) and
+  [home-assistant (VM104)](/containers/home-assistant.md) (192.168.0.213, likely DHCP not
+  static — flagged for follow-up). Corrected the "IPv6 off on all guests" claim: most
+  guests actually carry live global IPv6 addresses; only tailscale and openwebui match
+  the documented policy. See [IP addressing](/network/ip-addressing.md) for details.
+  **Not changed**: the documented 96GB host RAM figure — Dave confirmed this is correct
+  (with 24GB assigned to the docker-stack VM) despite the Proxmox summary page appearing
+  to show ~62GB total; this discrepancy needs separate follow-up and was left untouched.
+
+## 2026-07-24
+* **Creation**: Established the bundle from the `n5-pro-homelab` and `okf-documenter`
+  Claude Skills — [host overview](/host/n5-pro.md), 10 [container/VM](/containers/index.md)
+  concepts, 3 [storage pool](/storage/index.md) concepts, 4 [playbooks](/playbooks/index.md),
+  and 3 [network](/network/index.md) concepts.
