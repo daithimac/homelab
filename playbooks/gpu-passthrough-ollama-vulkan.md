@@ -13,6 +13,12 @@ working path here. This chain was fought end-to-end and every link matters. Symp
 send you here: `library=cpu`, `total_vram="0 B"`, `dropping integrated GPU`, or slow
 inference.
 
+**This page is about making the GPU work at all. For making it *fast*, see
+[Local LLM daily driver](local-llm-daily-driver.md)** — model shape (the single biggest
+lever, and one this page previously got wrong), the GTT ceiling that may be capping loads
+at ~31 GiB, the CPU governor, and the ZFS-ARC memory contention that can hard-lock the
+host.
+
 # Steps
 
 ### 1. Device passthrough (host: `/etc/pve/lxc/102.conf`)
@@ -70,6 +76,11 @@ su -s /bin/bash ollama -c 'vulkaninfo --summary'
 Win = a device `PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`, `driverName = radv`,
 `AMD Radeon Graphics (RADV GFX1150)`, vendorID `0x1002`.
 
+**Which 25.x you land on matters, and this install is unpinned.** Mesa **25.3+** carries
+Valve's RADV CU-mode/LDS patches, externally measured at **+19.8% prefill** on this GPU
+family. Backports moves, so check what actually landed rather than assuming — add
+`driverInfo` to the `grep` above.
+
 ### 5. The flag Ollama needs to NOT drop the iGPU
 Even with Vulkan seeing the card, Ollama **deliberately drops integrated GPUs by
 default**. The log line is literally `dropping integrated GPU; to enable, set
@@ -102,8 +113,16 @@ journalctl -u ollama --no-pager --since "30 sec ago" | grep -iE 'vulkan|vram|dro
 ```
 Win = `dropping` line GONE, and
 `inference compute ... library=Vulkan ... type=iGPU total="48.0 GiB"`. (It reports ~48GB
-because the iGPU can address system RAM as GTT, so capacity is NOT capped at the 2GB
+because the iGPU can address system RAM as GTT, so capacity is NOT capped at the
 dedicated VRAM — but see the speed note below.)
+
+**Do not read that 48 GiB as the real ceiling.** It is Ollama's own estimate of what it
+believes it can address, not the kernel's limit. The TTM `pages_limit` default is **half
+of system RAM**, which on this host (62GB visible, after the 32GB UMA carve-out) works out
+to **~31 GiB** — so loads above that may fail regardless of what Ollama advertises.
+Unverified; check with `cat /sys/class/drm/card1/device/mem_info_gtt_total` and see
+[Local LLM daily driver](local-llm-daily-driver.md#the-gtt-ceiling--likely-capped-at-31-gib-here)
+for how to raise it (and why `/etc/default/grub` may be a dead file on this host).
 
 # Tuning notes
 
@@ -112,16 +131,35 @@ dedicated VRAM — but see the speed note below.)
   it with the 12400 context.
 * `OLLAMA_KEEP_ALIVE=-1` pins models in memory (shows as a giant duration in logs —
   normal). With q8 cache + 12400 ctx on a shared-DDR5 iGPU, watch for memory pressure —
-  it's the first suspect if loads crawl or OOM.
+  it's the first suspect if loads crawl or OOM. **Stronger warning added 2026-07-28:** on
+  unified memory a GPU OOM can **hard-lock the whole host**, taking the NAS and all LAN
+  DNS with it, and ZFS ARC is competing for the same RAM the iGPU borrows as GTT. Pinning
+  indefinitely is the wrong default while ARC is also expanding, and CT102 has no memory
+  limit to backstop it. See
+  [Local LLM daily driver](local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number).
+* `OLLAMA_KV_CACHE_TYPE=q8_0` is a **memory** lever, not a speed one — externally measured
+  flat within noise (29.0 t/s either way) while halving the KV cache. The value is context
+  headroom. Both preconditions are already met here: `-fa on` (via
+  `OLLAMA_FLASH_ATTENTION=1`) and k/v matching, which this variable sets together.
 * Discovery may set a huge `default_num_ctx` (e.g. 262144) because it sees ~48GB. The
   explicit `OLLAMA_CONTEXT_LENGTH=12400` overrides per-model; keep it set.
 
 # The real performance lever: BIOS UMA frame buffer
 
 Measured generation was ~3.2 tok/s on shared memory — iGPU inference is
-**memory-bandwidth bound** on DDR5, so this is inherent, not a misconfig. More CPU cores
-don't help (bandwidth, not compute, is the limit). The one hardware lever is dedicated
-VRAM in BIOS:
+**memory-bandwidth bound** on DDR5. More CPU cores don't help (bandwidth, not compute, is
+the limit).
+
+**The "so this is inherent, not a misconfig" conclusion that used to follow was wrong, and
+BIOS UMA is not "the one hardware lever" — corrected 2026-07-28.** Bandwidth-bound is
+right; treating bytes-per-token as fixed is not. ~3.2 tok/s is exactly what the bandwidth
+model predicts for a **~30B dense q4** model (~18 GB/token ÷ ~60 GB/s), so the chain is
+performing to spec — but a ~30B **MoE** with ~3B active reads ~2 GB/token and should run
+roughly **7× faster** on the same hardware. Model shape is the biggest lever here, and it
+costs a model pull rather than a reboot. See
+[Local LLM daily driver](local-llm-daily-driver.md#the-one-law-bytes-per-token-not-parameter-count).
+
+The BIOS UMA lever below is still real, but it is worth ~11%, not 7×:
 
 1. Shut down guests cleanly, reboot host, enter BIOS (`Del` or `F2`).
 2. Path is firmware-dependent: `Advanced → AMD CBS → NBIO Common Options → GFX
@@ -140,8 +178,16 @@ VRAM in BIOS:
    (e.g. `24576M` for 24GB).
 
 Dedicated UMA gives cleaner allocation for hot weights than GTT spill, but it's a
-**modest** gain, not the CPU→GPU night-and-day. A 30B model will still be slow; match
-model size to the hardware (7–14B q4 is the pleasant range).
+**modest** gain, not the CPU→GPU night-and-day — externally measured at **~+11%** (21.33
+vs 19.18 t/s on a 35B MoE).
+
+**Sizing guidance corrected 2026-07-28.** This previously read "a 30B model will still be
+slow; match model size to the hardware (7–14B q4 is the pleasant range)." That holds for
+**dense** models and is wrong for **MoE**: a 35B-A3B MoE at q4 measured 21.6 t/s on
+identical silicon, while a 12B *dense* model managed only 10.6. Total parameters decide
+whether it fits; **active** parameters decide how fast it runs. Prefer MoE; treat dense
+above ~12B as non-viable at this bandwidth. Full reasoning and the model table are in
+[Local LLM daily driver](local-llm-daily-driver.md).
 
 # Citations
 

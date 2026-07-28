@@ -1,5 +1,89 @@
 # Directory Update Log
 
+## 2026-07-28 (3)
+* **Reviewed an external N5 Pro LLM benchmarking write-up against this bundle, and it
+  overturned the bundle's central claim about inference speed.** Dave supplied a July 2026
+  r/MINISFORUM post — "96GB Ryzen AI 9 HX 370 on Minisforum N5 Pro as a daily-driver local
+  LLM box" — by another owner of the **same silicon**: Ryzen AI 9 HX 370, Radeon 890M,
+  `gfx1150`, 96GB dual-channel SO-DIMM DDR5. Thirteen models benchmarked, every flag
+  published, and an unusually honest list of the author's own mistakes. Their platform is
+  Unraid with bare-metal Docker rather than Proxmox with an unprivileged LXC, so the
+  bootloader and cgroup specifics needed translating, but the hardware match means their
+  numbers are effectively predictions for this box.
+  **The correction that matters.**
+  [GPU passthrough & Ollama on Vulkan](playbooks/gpu-passthrough-ollama-vulkan.md) recorded
+  ~3.2 tok/s and concluded it was "inherent, not a misconfig" because iGPU inference is
+  memory-bandwidth bound on DDR5. Bandwidth-bound is correct; treating **bytes per token**
+  as fixed was not. Speed here is set by bytes read per token, not parameter count — the
+  author measured a 117B MoE with ~5B active at **20.7 t/s** and a 12B *dense* model at
+  **10.6 t/s**, so the far larger model ran twice as fast. Running the numbers for this
+  host, ~3.2 tok/s is exactly what the model predicts for a **~30B dense q4** (~18 GB/token
+  ÷ ~60 GB/s), which reframes the figure as *good* news: the passthrough chain built across
+  earlier sessions is performing to spec, and the model shape is the bottleneck. A ~30B MoE
+  with ~3B active should run roughly **7× faster** for the price of a model pull. The
+  playbook's "7–14B q4 is the pleasant range" and "a 30B model will still be slow" sizing
+  guidance was corrected in place, marked as dated, with the dense/MoE distinction made
+  explicit rather than the old text being quietly deleted.
+  **This turned out to be concrete rather than theoretical.**
+  [sillytavern (CT120)](containers/sillytavern.md)'s configured chat model is
+  `Moonlit-Mirage-12B-i1-GGUF` — a 12B **dense** model, the exact shape the author used as
+  their dense control. That's confirmed from the bundle rather than inferred, so at least
+  one daily-driver frontend is running the worst-performing shape available to it. Flagged
+  on that page with the caveat that finding a roleplay-tuned MoE equivalent is a real
+  judgement call, not a straight swap.
+  **A capacity limit nobody had checked.** The kernel's TTM `pages_limit` defaults to half
+  of system RAM; this host shows 62GB to the OS after the 32GB UMA carve-out, giving a
+  likely **~31 GiB GTT ceiling**. The playbook records Ollama reporting `total="48.0 GiB"`
+  as its success condition — but that is Ollama's own estimate of what it believes it can
+  address, not the kernel's limit, so loads above ~31 GiB may be failing for an
+  uninvestigated reason. Annotated in place with the one-command check
+  (`mem_info_gtt_total`, on **card1** — the source used card0, which is wrong for this
+  host). The author lost a week to these kernel params sitting in a `syslinux.cfg` that
+  Unraid had stopped reading; the identical trap exists here, since on ZFS root
+  `/etc/default/grub` is inert and the live path is `/etc/kernel/cmdline` +
+  `proxmox-boot-tool refresh`. Recorded as a P3 with the bootloader check first.
+  **New page rather than more sprawl in the passthrough playbook:**
+  [Local LLM daily driver](playbooks/local-llm-daily-driver.md). That playbook is about
+  making the GPU work *at all* and was already long; this one is about making it *fast*
+  once it does. It carries the bytes-per-token law, the model table, the GTT and UMA
+  material, the untried levers, KV-cache facts, frontend gotchas, and a verification
+  sequence — with a standing header that **none of it is verified on this host**, since
+  the whole point of the author's write-up is that unverified config beliefs are the
+  expensive kind. Linked from [playbooks/index.md](playbooks/index.md),
+  [ollama (CT102)](containers/ollama.md), [sillytavern](containers/sillytavern.md),
+  [AIVault](storage/aivault.md) and the passthrough playbook.
+  **The risk finding, which outranks the speed ones.** On unified memory a GPU OOM
+  hard-locks the whole machine. Here that means the NAS, *all* LAN DNS via AdGuard, Home
+  Assistant and ten other guests going down together — a far larger blast radius than the
+  author's single Immich instance. Three factors compound it, none previously documented:
+  ZFS ARC across **three** pools competes for the RAM the iGPU borrows as GTT (the author
+  had to cap `zfs_arc_max` from 19.2 to 8 GiB with only one pool), `OLLAMA_KEEP_ALIVE=-1`
+  pins models indefinitely, and CT102 has no cgroup memory limit to backstop it. Raised as
+  P2 and the existing `KEEP_ALIVE` tuning note on the passthrough page was given a much
+  stronger warning.
+  **Also reframed the parked BIOS UMA decision** ([actions.md](actions.md)) — it had been
+  sitting as "32GB vs a documented 24GB sweet spot" since 2026-07-25 with no way to price
+  either side. There is now a number: UMA-resident measured only **~+11%** over GTT, so
+  today's 32GB buys ~11% on what fits inside it while charging every other guest 8GB
+  permanently. The argument points at **16GB**, not 24GB, with GTT raised to carry the
+  pool — and dropping to 16GB lifts the *default* GTT ceiling from ~31 to ~40 GiB as a
+  side effect. Still needs Dave at the console; batched with the `ttm.pages_limit` change
+  since both want the same reboot.
+  **Two smaller consequences.** [AIVault](storage/aivault.md)'s 164G ceiling stops being
+  theoretical if the MoE switch happens — those models are 36–59GB each and the author's
+  weights directory grew 15GB → 280GB in three weeks, so the parked reservation decision
+  becomes a blocker within days. And a security item transfers directly: the author had
+  concluded Open WebUI was fine because no login prompt appeared in their browser, then
+  found it returning **200 with no auth** when probed from off-box. CT106 sits on
+  `192.168.0.17:8080` behind no active Proxmox firewall, so that's worth an actual
+  fresh-session probe; logged P3.
+  Four cheap untried levers went to P4 — CPU governor (**+36% generation, +120% prefill**,
+  the author's top-ranked lever and untouched here), the unpinned Mesa version (25.3+ is
+  worth +19.8% prefill), Ollama build recency, and a batch-size sweep.
+  **Nothing was verified on the host in this session** — no SSH, no `pct exec`, no
+  measurements. Every new claim is marked as external and inferred, and the P2/P3 items are
+  written as checks to run rather than fixes to apply.
+
 ## 2026-07-28 (2)
 * **Audited every domain reference in the bundle against live config, and found two stale
   claims.** Follow-up to entry (1). Extracted all 17 distinct `.lan` hostnames appearing in

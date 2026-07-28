@@ -6,6 +6,7 @@ fast path to a known fix.
 
 * [Recurring gotchas](troubleshooting-gotchas.md) - the checklist to run through before first principles.
 * [GPU passthrough & Ollama on Vulkan](gpu-passthrough-ollama-vulkan.md) - the full iGPU → Ollama chain for CT102.
+* [Local LLM daily driver](local-llm-daily-driver.md) - getting usable tokens/sec out of the 890M once passthrough works: model shape, the GTT ceiling, the UMA trade, memory contention.
 * [Tailscale subnet router & exit node](tailscale-subnet-router-exit-node.md) - setup for CT105.
 * [ZFS pools & bind-mount permissions](zfs-bind-mount-permissions.md) - the UID-mapping dance for unprivileged LXCs.
 * [Reverse proxy via Caddy](reverse-proxy-caddy.md) - how `.lan` domains get real HTTPS with no port, on docker-stack (VM103).

@@ -30,8 +30,20 @@ grep unprivileged /etc/pve/lxc/102.conf
 
 Full device passthrough, idmap, Mesa backports, and the `OLLAMA_IGPU_ENABLE=1` chain are
 documented in [GPU passthrough & Ollama on Vulkan](/playbooks/gpu-passthrough-ollama-vulkan.md).
-Symptoms that send you to that playbook: `library=cpu`, `total_vram="0 B"`, `dropping
-integrated GPU`, or slow inference.
+Symptoms that send you to that playbook: `library=cpu`, `total_vram="0 B"`, or `dropping
+integrated GPU`.
+
+**Slow inference is a different problem and now has its own page** —
+[Local LLM daily driver](/playbooks/local-llm-daily-driver.md). Headline: the ~3.2 tok/s
+recorded here matches what the bandwidth model predicts for a **dense** ~30B q4 model, so
+the chain is healthy and the *model shape* is the bottleneck; a ~30B **MoE** with ~3B
+active should run roughly 7× faster. That page also covers the GTT ceiling (possibly
+capping this container at ~31 GiB regardless of Ollama's reported 48 GiB), the CPU
+governor, and a memory-contention risk that can hard-lock the host.
+
+**No memory limit is set on this container.** On unified memory a GPU OOM can lock the
+whole box rather than just this guest — worth a cgroup limit before experimenting with
+larger models. See the memory-contention section of that page.
 
 # Storage
 
