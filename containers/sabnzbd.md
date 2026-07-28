@@ -21,9 +21,19 @@ over mDNS — see the `.local` vs `.lan` boundary note in
 
 # Reverse-proxied
 
-Reachable as `https://sabnzbd.lan` via [Caddy](/playbooks/reverse-proxy-caddy.md) — needed
-`sabnzbd.lan` added to `host_whitelist` in `sabnzbd.ini` to stop it 403ing on the proxied
-Host header (see the playbook's gotchas section).
+Reachable via [Caddy](/playbooks/reverse-proxy-caddy.md) at either:
+
+* `https://sabnzbd.lan` — internal CA, browsers warn until the device trusts Caddy's root.
+* `https://sabnzbd.133gsl.ie` — publicly-trusted Let's Encrypt certificate, no per-device
+  trust step. See [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
+
+**Every new hostname must be added to `host_whitelist` in `sabnzbd.ini` separately**, or
+SABnzbd returns `403` on the proxied Host header rather than loading. `sabnzbd.lan` was
+added 2026-07-25 and `sabnzbd.133gsl.ie` on 2026-07-28; the file now lists both. Restart
+with **`systemctl restart sabnzbdplus@root.service`** — the unit is *not* called `sabnzbd`,
+and restarting that name succeeds silently while changing nothing. Verified 2026-07-28:
+`Host: sabnzbd.133gsl.ie` → `200`, an unlisted host → `403`, so the whitelist is genuinely
+enforcing rather than just permissive.
 
 # Citations
 

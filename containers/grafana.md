@@ -30,6 +30,10 @@ dedicated `prometheus@pve` API user (`verify_ssl: false`).
 
 Single datasource: Prometheus at `http://localhost:9090`.
 
+Reachable at `https://grafana.lan` or `https://grafana.133gsl.ie` — the latter serves a
+publicly-trusted certificate and needs no per-device CA trust. See
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
+
 **First dashboard built 2026-07-25**: "N5 Pro Host Overview" (`uid: n5pro-overview`,
 `https://grafana.lan/d/n5pro-overview/`) — host CPU/memory/uptime stats, per-guest
 CPU/memory timeseries, and storage pool usage %, all against the `pve_*` metrics from

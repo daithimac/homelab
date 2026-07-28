@@ -24,7 +24,10 @@ replaced the earlier NextDNS-via-Tailscale setup (Jul 2026).
 
 # AdGuard config
 
-Web UI at `http://192.168.0.20`, port 80 (3000 is only first-run setup):
+Web UI at `http://192.168.0.20`, port 80 (3000 is only first-run setup). It's also proxied
+as `https://adguard.lan` / `https://adguard.133gsl.ie`, but **the raw IP is the one to
+remember** — those hostnames are resolved by AdGuard itself, so if it's down or
+misconfigured (which is exactly when you want the UI) they won't resolve. Config:
 
 * **Upstreams**: `https://dns.cloudflare.com/dns-query` +
   `https://dns.google/dns-query`, **Parallel requests** mode. Quad9
@@ -34,7 +37,10 @@ Web UI at `http://192.168.0.20`, port 80 (3000 is only first-run setup):
 * **Local names** via Filters → DNS rewrites, `.lan` TLD (never `.local` — mDNS owns it).
   Names resolve tailnet-wide, so `jellyfin.lan` works remotely too. Most of them now go
   through the [Caddy reverse proxy](/playbooks/reverse-proxy-caddy.md) on docker-stack,
-  which handles HTTPS and the port for you — plain `https://jellyfin.lan` just works. A few
+  which handles HTTPS and the port for you — plain `https://jellyfin.lan` just works. The
+  same services also answer on `<name>.133gsl.ie` via a single wildcard rewrite, with a
+  publicly-trusted certificate instead of the internal CA — see
+  [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md). A few
   domains (`nas.lan`, `tailscale.lan`, `opencode.lan`) aren't proxied because there's no web
   UI behind them; those still need whatever port the underlying service actually listens on
   if one exists at all.
@@ -82,7 +88,16 @@ Web UI at `http://192.168.0.20`, port 80 (3000 is only first-run setup):
   **`coder.lan` → `192.168.0.14` followed on 2026-07-26** for
   [code-server (CT113)](/containers/code-server.md) — 17. Note that one is the sole rewrite
   whose name doesn't match its guest's hostname (the container is `code-server`); it was
-  requested as `coder.lan`. Because these `.14` answers are now *correct by design* (Caddy fronts them),
+  requested as `coder.lan`.
+
+  **The 18th entry, added 2026-07-28, is the first wildcard: `'*.133gsl.ie'` →
+  `192.168.0.14`.** One rewrite covers every service on the new public domain, so no
+  per-service entry is needed there — see
+  [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md). It must be written
+  **in quotes**: an unquoted `*` opening a YAML scalar is an alias reference, which would
+  have crash-looped AdGuardHome the same way the indentation trap below once did. Note the
+  side effect that made an explicit ACME resolver necessary in Caddy — this wildcard also
+  answers for `_acme-challenge.133gsl.ie`. Because these `.14` answers are now *correct by design* (Caddy fronts them),
   a fresh reader should not mistake today's block of identical `.14` answers for a
   recurrence of the copy-paste bug above — the tell is whether the domain has a matching
   Caddy block, not the answer value.

@@ -54,19 +54,32 @@ cause is **not** this VM — it's a pre-existing bug in AdGuard's rewrite table,
 
 # Reverse proxy (Caddy)
 
-`stack-caddy-1` (image `caddy:2`) listens on this VM's `80`/`443` and reverse-proxies most
-other guests' web UIs with automatic internal HTTPS — `https://jellyfin.lan`,
-`https://grafana.lan`, etc. all route through here rather than hitting each service's own
-IP directly. Full domain table, how to add a new one, and the two gotchas hit while wiring
-it up (an AdGuardHome YAML indentation trap and a SABnzbd Host-header 403): see
-[Reverse proxy via Caddy](/playbooks/reverse-proxy-caddy.md).
+`stack-caddy-1` listens on this VM's `80`/`443` and reverse-proxies most other guests' web
+UIs — `https://jellyfin.lan`, `https://grafana.lan`, etc. all route through here rather
+than hitting each service's own IP directly. Full domain table, how to add a new one, and
+the two gotchas hit while wiring it up (an AdGuardHome YAML indentation trap and a SABnzbd
+Host-header 403): see [Reverse proxy via Caddy](/playbooks/reverse-proxy-caddy.md).
+
+**The image is `caddy-cf:2`, not stock `caddy:2`** — changed 2026-07-28. It's built locally
+from `/data/caddy/build/Dockerfile` with the `caddy-dns/cloudflare` module compiled in,
+because stock `caddy:2` ships **no DNS providers** and therefore cannot do ACME DNS-01 at
+all. That's what lets the same instance also serve `*.133gsl.ie` with a publicly-trusted
+Let's Encrypt wildcard alongside the `tls internal` `.lan` blocks. The Cloudflare API token
+is injected via `env_file: /opt/stack/caddy.env` (mode `600`, deliberately **outside**
+`/data/caddy`, which is bind-mounted into the container). Rebuild with
+`docker build -t caddy-cf:2 /data/caddy/build`; if you ever recreate this container from
+stock `caddy:2`, every `.ie` certificate stops renewing. See
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
 
 # Kokoro TTS (added 2026-07-26)
 
 `stack-kokoro-1` (image `ghcr.io/remsky/kokoro-fastapi-cpu:latest`, 5.42GB) serves
 **Kokoro-82M** text-to-speech on `192.168.0.14:8880` with an OpenAI-compatible API
 (`/v1/audio/speech`), plus a voice-auditioning web UI at `/web` and API docs at `/docs`.
-Reverse-proxied as `https://kokoro.docker.lan`.
+Reverse-proxied as `https://kokoro.docker.lan`, or `https://kokoro.133gsl.ie` — note the
+`.ie` name **flattens to one label** (`kokoro`, not `kokoro.docker`), because a
+`*.133gsl.ie` wildcard certificate covers exactly one label. Same applies to `n8n` and
+`qdrant`.
 
 It exists to feed [audiobooks (CT111)](/containers/audiobooks.md) — see
 [EPUB/PDF to audiobook](/playbooks/epub-to-audiobook.md). It runs **CPU-only** and

@@ -5,6 +5,15 @@ static IPs in `.11-.27`, DNS pointed at [AdGuard](/containers/adguard.md)
 (`192.168.0.20`), and IPv6 off — see [IP addressing](/network/ip-addressing.md) for the
 policy history and how each was verified.
 
+**Reaching a web UI: use the hostname, not the IP.** Everything with a web interface is
+fronted by [Caddy](/playbooks/reverse-proxy-caddy.md) on docker-stack under two parallel
+names — `<name>.lan` (Caddy's internal CA, so browsers warn until the device trusts the
+root) and `<name>.133gsl.ie` (**publicly-trusted Let's Encrypt wildcard, no trust step**,
+added 2026-07-28 — see [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md)).
+Prefer the `.ie` name. Both resolve only inside the tailnet; neither is published publicly.
+Note that **the IPs below are the guests' own addresses — the DNS names do not resolve to
+them**, they resolve to `192.168.0.14` where Caddy routes by Host header.
+
 * [nas (CT100)](nas.md) - Samba / NAS, unprivileged LXC, 192.168.0.11.
 * [jellyfin (CT101)](jellyfin.md) - Media server with hardware transcode via the iGPU, unprivileged LXC, 192.168.0.12.
 * [ollama (CT102)](ollama.md) - Ollama LLM inference on Vulkan/iGPU, unprivileged LXC, 192.168.0.13.

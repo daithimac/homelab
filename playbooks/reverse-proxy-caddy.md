@@ -6,6 +6,13 @@ tags: [caddy, reverse-proxy, tls, dns, docker-stack, adguard]
 timestamp: 2026-07-25T00:00:00Z
 ---
 
+> **Updated 2026-07-28:** the container no longer runs stock `caddy:2` — it runs a locally
+> built **`caddy-cf:2`** with the `caddy-dns/cloudflare` module compiled in, and now also
+> serves `*.133gsl.ie` with a **publicly-trusted Let's Encrypt wildcard** alongside every
+> `tls internal` `.lan` block described below. The `.lan` setup here is unchanged and still
+> the fallback. See
+> [133gsl.ie on Cloudflare DNS](dns-cloudflare-133gsl-ie.md).
+
 A `caddy:2` container (`stack-caddy-1`) already existed on
 [docker-stack (VM103)](/containers/docker-stack.md), fully configured with automatic
 internal HTTPS (`tls internal`) for nearly every `.lan` domain — but it was never wired

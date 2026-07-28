@@ -1,5 +1,85 @@
 # Directory Update Log
 
+## 2026-07-28 (2)
+* **Audited every domain reference in the bundle against live config, and found two stale
+  claims.** Follow-up to entry (1). Extracted all 17 distinct `.lan` hostnames appearing in
+  the docs and checked each against both `dig @192.168.0.20` and the live Caddyfile;
+  extracted the live backend map and diffed it against the table in
+  [reverse-proxy-caddy.md](playbooks/reverse-proxy-caddy.md). **The hostname/port tables
+  were entirely accurate** — including the two correctly documented as unproxied
+  (`nas.lan`, Samba only; `tailscale.lan`, no web UI). Two errors elsewhere:
+  **[jellyfin (CT101)](containers/jellyfin.md) claimed `jellyfin.lan` resolves to
+  `192.168.0.12`.** It had been wrong since 2026-07-25, when the Caddy wiring repointed that
+  rewrite at `192.168.0.14` — the page was never updated, and it sat under a heading reading
+  "IP — confirmed", which is exactly the kind of false confidence that costs an hour later.
+  Corrected, with the guest's own `.12` kept and the distinction made explicit: a DNS answer
+  is not a way to look up a guest's IP.
+  **[docker-stack (VM103)](containers/docker-stack.md) still described `stack-caddy-1` as
+  image `caddy:2`.** Stale as of entry (1) the same day — it's now the locally built
+  `caddy-cf:2`. Rewritten with the rebuild command and a warning that recreating the
+  container from stock `caddy:2` silently stops every `.ie` certificate renewing.
+  **Also added the `.ie` name to each service's access line** — jellyfin, openwebui, ollama,
+  sillytavern, grafana, sabnzbd, audiobooks, audiobookshelf, code-server, kokoro — plus a
+  general note on [containers/index.md](containers/index.md) explaining that the IPs listed
+  there are the guests' own and that the DNS names all resolve to `.14`. Historical and
+  verification text was deliberately **left unchanged**: those lines record what was actually
+  run at the time, and rewriting them would falsify the record.
+  Raw-IP references were reviewed and left alone — they're service-to-service API endpoints
+  (SillyTavern→Ollama, CT111→Kokoro) or deliberate connectivity tests, where routing through
+  Caddy would only add a hop. The one exception got a note rather than a change:
+  [AdGuard](network/dns-adguard.md)'s own UI is documented by IP on purpose, since
+  `adguard.lan` is resolved by AdGuard itself and won't work precisely when you need it.
+
+## 2026-07-28 (1)
+* **Put `133gsl.ie` on Cloudflare DNS and gave the whole lab publicly-trusted HTTPS, without
+  opening a port.** Dave bought the domain from Maxer and asked how to migrate DNS to
+  Cloudflare and use it for homelab services. Two constraints shaped everything: Cloudflare
+  Registrar **doesn't sell `.ie`**, so registration stays at Maxer and only DNS moves; and
+  the `.ie` registry runs a **pre-delegation zonecheck**, so the Cloudflare zone had to be
+  live and authoritative *before* the nameserver change, the reverse of the usual order.
+  There turned out to be nothing to migrate at all — the domain was freshly registered and
+  never delegated, so this was a first-time delegation rather than a migration.
+  **Design.** Split-horizon, chosen over a public tunnel: the public Cloudflare zone holds
+  **one CAA record and nothing else**, while AdGuard resolves `*.133gsl.ie` →
+  `192.168.0.14` for tailnet devices. A **wildcard** cert rather than per-service certs,
+  specifically because every public cert is published to Certificate Transparency logs —
+  15 individual certs would have published a greppable inventory of the lab
+  (`sabnzbd.133gsl.ie`, `proxmox.133gsl.ie`, …). This retires the per-device "trust Caddy's
+  internal CA" chore for the `.ie` names.
+  **Built.** Rebuilt Caddy as `caddy-cf:2` with `caddy-dns/cloudflare` (stock `caddy:2` has
+  no DNS providers compiled in, so DNS-01 was simply unavailable), swapped the image in and
+  confirmed it was a clean drop-in on the existing `.lan` config *before* writing any `.ie`
+  config; added the 18th AdGuard rewrite — the first wildcard one; pre-added
+  `sabnzbd.133gsl.ie` to SABnzbd's `host_whitelist`; appended a `*.133gsl.ie` site block
+  with 14 services. Turned **Universal SSL off** on the zone, because Cloudflare silently
+  appends CAA records for its own five CA providers whenever a CAA record exists — visible
+  in `dig` but hidden from the dashboard, so the intended "only Let's Encrypt" policy was
+  quietly a five-CA policy until that was found.
+  **Four gotchas, all now in the playbook.** `*` must be **quoted** in `AdGuardHome.yaml`
+  or it parses as a YAML alias and crash-loops the service. `ns1.maxer.com` is not
+  authoritative for Maxer domains (the real backend is `ns1.fastsecurehost.com`), and its
+  silence under `dig +short` reads exactly like an empty zone — check for the `aa` flag
+  instead. Cloudflare has **two kinds of API token** with different verify endpoints, and an
+  account-owned one reports `Invalid API Token` at `/user/tokens/verify` while being
+  perfectly valid; roughly 40 minutes were lost treating a working token as broken, and the
+  fix was to stop trusting a generic verify endpoint and exercise the actual calls
+  (`GET /zones?name=`, then create and delete a TXT). And `qm guest exec … | grep` doesn't
+  filter — the guest's stdout returns as one JSON-escaped string, so the pipe must go
+  *inside* the guest command.
+  **Verified rather than assumed.** Issuer `Let's Encrypt CN=YE1`, subject `CN=*.133gsl.ie`,
+  SAN `DNS:*.133gsl.ie`, valid to 2026-10-26. Nine services returned `200`/`302` over
+  `curl` **without `-k`**, so the chain validates against the system trust store. All `.lan`
+  names re-tested and unaffected; public DNS confirmed to return nothing for any service
+  name, which is the split-horizon boundary holding. New playbook:
+  [133gsl.ie on Cloudflare DNS](playbooks/dns-cloudflare-133gsl-ie.md); cross-referenced
+  from [reverse-proxy-caddy.md](playbooks/reverse-proxy-caddy.md) and
+  [dns-adguard.md](network/dns-adguard.md).
+  **Two things surfaced in passing**, both filed in [actions.md](actions.md): SSH key auth
+  from Dave's Mac had to be set up mid-session (it reached neither the host nor VM103, which
+  blocked automating any of this), and `/opt/stack/docker-compose.yml` on VM103 turned out
+  to hold **plaintext credentials in a world-readable file** — including a Google app
+  password for Dave's Gmail.
+
 ## 2026-07-26 (11)
 * **Fixed the Thunderbolt link, which had never worked since the Proxmox install.** Dave
   asked for the Mac-mini↔NAS TB connection to be set up after a previous attempt failed.

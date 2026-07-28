@@ -41,8 +41,10 @@ The path CT111 sees is `/srv/media/Books/inbox` (host `/MediaTank/media/Books/in
 
 # The web UI (easiest path)
 
-**`https://audiobooks.lan`** — upload a book, pick a voice, hit Start. Served by
-`audiobook-ui.service` on [CT111](/containers/audiobooks.md).
+**`https://audiobooks.lan`** — or **`https://audiobooks.133gsl.ie`**, which needs no
+per-device CA trust ([133gsl.ie on Cloudflare DNS](dns-cloudflare-133gsl-ie.md)). Upload a
+book, pick a voice, hit Start. Served by `audiobook-ui.service` on
+[CT111](/containers/audiobooks.md).
 
 Four things trip you up on first use, all of them defaults that assume you're paying
 OpenAI rather than running Kokoro locally:

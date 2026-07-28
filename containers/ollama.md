@@ -9,6 +9,13 @@ timestamp: 2026-07-19T00:00:00Z
 CT102, hostname `ollama`, **192.168.0.13**. Runs Ollama for LLM inference against the
 Radeon 890M iGPU via the Vulkan backend (not ROCm — gfx1150 support under ROCm is flaky).
 
+The API is on `192.168.0.13:11434`, also proxied as `https://ollama.lan` /
+`https://ollama.133gsl.ie` ([133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md)).
+Note the in-fleet clients — [openwebui](openwebui.md) and [sillytavern](sillytavern.md) —
+point at the **raw `IP:11434`**, not the proxied name, and there's no reason to change that:
+routing local service-to-service calls through Caddy would only add a hop and a TLS
+handshake.
+
 # Privilege mode — confirm before assuming
 
 As of the GPU-passthrough work this container remains **unprivileged**, with an idmap

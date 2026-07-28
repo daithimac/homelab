@@ -11,10 +11,24 @@ Radeon 890M iGPU for hardware transcode.
 
 # IP — confirmed
 
-AdGuard's DNS rewrites point `jellyfin.lan` at **192.168.0.12**. Previously unverified
-against the container's own config; confirmed directly in the Proxmox UI on 2026-07-25.
-Note `.12` still sits in the historical DHCP-collision zone (see
+The container's own address is **192.168.0.12**, confirmed directly in the Proxmox UI on
+2026-07-25. Note `.12` still sits in the historical DHCP-collision zone (see
 [IP addressing](/network/ip-addressing.md)), so re-check if it ever seems to drift.
+
+**`jellyfin.lan` does not resolve to `.12`.** This page said so until 2026-07-28, and it
+had been wrong since the [Caddy reverse proxy](/playbooks/reverse-proxy-caddy.md) was wired
+up on 2026-07-25 — the rewrite was repointed at **192.168.0.14** (docker-stack, where Caddy
+runs) that same day, and Caddy forwards to `.12:8096` by Host header. Verified live
+2026-07-28: `dig +short jellyfin.lan @192.168.0.20` → `192.168.0.14`. Don't use the DNS
+answer as a way to look up a guest's own IP; that's what
+[IP addressing](/network/ip-addressing.md) is for.
+
+# Access
+
+* `https://jellyfin.lan` — internal CA, browsers warn until the device trusts Caddy's root.
+* `https://jellyfin.133gsl.ie` — **publicly-trusted Let's Encrypt wildcard, no per-device
+  trust step.** Resolves only inside the tailnet; public DNS returns nothing. Preferred.
+  See [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
 
 # Storage
 

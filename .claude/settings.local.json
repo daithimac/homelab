@@ -80,7 +80,16 @@
       "Bash(python3 wtest.py /Users/ward/mnt/media-tb/.tbtest.bin 4000)",
       "Bash(python3 wtest.py \"/Volumes/media/.tbtest.bin\" 4000)",
       "Bash(dd if=/Users/ward/mnt/media-tb/__TRACKED_VAR__ of=/dev/null bs=1m count=3000)",
-      "Bash(dd if=/Volumes/media/__TRACKED_VAR__ of=/dev/null bs=1m count=2000 skip=4000)"
+      "Bash(dd if=/Volumes/media/__TRACKED_VAR__ of=/dev/null bs=1m count=2000 skip=4000)",
+      "WebFetch(domain:developers.cloudflare.com)",
+      "WebFetch(domain:domains.cloudflare.com)",
+      "Bash(echo \"--- exit $? ---\")",
+      "Read(//Users/davidward/projects/**)",
+      "Bash(echo \"--- rc=$? ---\")",
+      "Bash(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@192.168.0.10 'echo PVE-OK; hostname' 2>&1 | tail -5; echo \"--- rc=$? ---\"; grep -iE \"^Host |HostName\" ~/.ssh/config 2>/dev/null | head -20)",
+      "Bash(dig +short NS 133gsl.ie @1.1.1.1)",
+      "Bash(dig +short CAA 133gsl.ie @1.1.1.1)",
+      "Bash(grep -rnE '\\(rewrite|resolve|points?|answers?\\).{0,60}\\(192\\\\.168\\\\.0\\\\.[0-9]+\\)' --include='*.md' containers/ network/ playbooks/ host/ storage/)"
     ]
   }
 }

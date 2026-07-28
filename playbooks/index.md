@@ -9,4 +9,5 @@ fast path to a known fix.
 * [Tailscale subnet router & exit node](tailscale-subnet-router-exit-node.md) - setup for CT105.
 * [ZFS pools & bind-mount permissions](zfs-bind-mount-permissions.md) - the UID-mapping dance for unprivileged LXCs.
 * [Reverse proxy via Caddy](reverse-proxy-caddy.md) - how `.lan` domains get real HTTPS with no port, on docker-stack (VM103).
+* [133gsl.ie on Cloudflare DNS](dns-cloudflare-133gsl-ie.md) - the public domain, split-horizon DNS, and publicly-trusted wildcard certs with no open ports.
 * [EPUB/PDF to audiobook](epub-to-audiobook.md) - converting ebooks to MP3 with Kokoro TTS and CT111.

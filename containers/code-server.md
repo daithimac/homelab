@@ -7,7 +7,11 @@ timestamp: 2026-07-26T00:00:00Z
 ---
 
 CT113, hostname `code-server`, unprivileged LXC at **192.168.0.27**. Created 2026-07-26 to
-give Dave a browser-based VS Code on the box, reachable at **`https://coder.lan`**.
+give Dave a browser-based VS Code on the box, reachable at **`https://coder.lan`** — or
+**`https://coder.133gsl.ie`**, which serves a publicly-trusted certificate and needs no
+per-device CA trust. See
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md). Note the `.ie` name
+keeps the same `coder` label, so it's `coder.133gsl.ie` and not `code-server.133gsl.ie`.
 
 **This is `code-server`, not Coder.** The two are different products from the same vendor
 and the request named both ("Coder Code Server"). Installed here is

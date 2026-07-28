@@ -10,6 +10,11 @@ CT120, hostname `sillytavern`, unprivileged LXC, static **192.168.0.22**. Chat f
 [ollama (CT102)](ollama.md), running natively via Node.js — not Docker (`features:
 nesting=0` in the LXC config rules out a nested container runtime).
 
+Reachable at `https://sillytavern.lan` or `https://sillytavern.133gsl.ie` (publicly-trusted
+certificate, no per-device CA trust — see
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md)), both proxied by
+[Caddy](/playbooks/reverse-proxy-caddy.md) to `192.168.0.22:8000`.
+
 # IP was DHCP until 2026-07-25 — now fixed
 
 Originally found on DHCP (`net0: ...,ip=dhcp` in `pct config 120`), unlike every other

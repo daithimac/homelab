@@ -30,6 +30,19 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   a keypair with no config referencing it. See
   [n5-pro](/host/n5-pro.md#ssh-access). Left open above: the two stale keys found alongside.
 
+  **This regressed and was re-fixed 2026-07-28.** Checked live at the start of the DNS work:
+  `~/.ssh/` on the Mac contained **no `.pub` files at all**, `ssh-add -l` reported no
+  identities, and both `root@192.168.0.10` and `dave@192.168.0.14` returned `Permission
+  denied (publickey,password)`. So the `id_ed25519` installed on 2026-07-26 no longer exists
+  on the Mac — the keypair was lost or the machine was rebuilt between sessions, and the
+  entry above read as current while being false. Dave generated a **new** `id_ed25519` and
+  `ssh-copy-id`'d it to both `root@192.168.0.10` and `dave@192.168.0.14` (the VM, which had
+  never had key auth before). Verified from the Mac with `ssh -o BatchMode=yes`. Two
+  consequences: the P3 item below about stale keys now describes fingerprints that **no
+  longer match anything on the Mac either**, since the Mac's own key changed again; and the
+  host's `authorized_keys` has accumulated another entry. Worth a single reconciliation pass
+  over `/etc/pve/priv/authorized_keys` rather than another append next time.
+
 * ~~**Edge TTS was documented as the Irish route without anything having been synthesised
   through it.**~~ **Verified 2026-07-26, same day it was raised.** Dave chose Edge after
   it turned out neither local backend has any Irish voice (both checked live — Kokoro's
@@ -191,6 +204,24 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   `pct exec 109` with a `sed` anchored per-domain block, `systemctl restart AdGuardHome`.
   Verified live with `dig @192.168.0.20` against all 12 domains post-restart — all
   correct. Full table in [DNS via AdGuard](/network/dns-adguard.md).
+
+## P1 — confirmed, act soon
+
+* **`/opt/stack/docker-compose.yml` on docker-stack holds plaintext credentials in a
+  world-readable file.** Found 2026-07-28 while adding the `env_file` for the Cloudflare
+  token. The file is mode `664` — readable by every account on
+  [VM103](/containers/docker-stack.md) — and carries `POSTGRES_PASSWORD` on the `postgres`
+  service and `N8N_SMTP_PASS` on `n8n`. The second is the one that matters: it's a **Google
+  app password for Dave's Gmail**, which bypasses 2FA and grants SMTP send as him, sitting
+  next to `N8N_SMTP_USER`/`N8N_SMTP_SENDER` so it's immediately usable by anyone who reads
+  the file. Rotate the app password at
+  [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) — only Dave
+  can do that — then move both secrets into a `600` env file referenced via `env_file:`,
+  exactly as `/opt/stack/caddy.env` now does for the Cloudflare token, and tighten the
+  compose file to `640`. Note that rotating `POSTGRES_PASSWORD` also means an `ALTER USER`
+  inside the running container plus updating consumers, so check what actually connects to
+  the `oireachtas` database first. Not actioned — deliberately left out of the DNS work
+  rather than bundled into an unrelated change.
 
 ## P2 — confirmed, needs a decision
 
@@ -376,12 +407,25 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   feature set, likely never touched since the TrueNAS import). Not urgent, not
   investigated further — flagging in case it matters for a future feature.
 
-* **Trust the Caddy internal CA on your devices.** `https://jellyfin.lan` and friends now
-  serve real (self-signed) HTTPS via the reverse proxy set up 2026-07-25, but browsers
-  will show a cert warning until each device trusts the root CA. One-time, per-device,
-  and only you should do it — see
-  [Reverse proxy via Caddy](/playbooks/reverse-proxy-caddy.md#trusting-the-internal-ca)
-  for the retrieval command.
+* **Trust the Caddy internal CA on your devices — now optional, and probably unnecessary.**
+  `https://jellyfin.lan` and friends serve real (self-signed) HTTPS via the reverse proxy
+  set up 2026-07-25, and browsers show a cert warning until each device trusts the root CA.
+  **As of 2026-07-28 there's a better route**: the same services also answer on
+  `https://<name>.133gsl.ie` with a **publicly-trusted Let's Encrypt wildcard**, which needs
+  no per-device trust step at all — see
+  [133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md). Use the `.ie` names
+  and this item goes away. The `.lan` names are being kept in parallel as a fallback for
+  now, so the internal-CA option remains valid if you want it; the retrieval command is in
+  [Reverse proxy via Caddy](/playbooks/reverse-proxy-caddy.md#trusting-the-internal-ca).
+
+* **Decide whether the `.lan` names get retired.** Both `.lan` (internal CA) and
+  `.133gsl.ie` (Let's Encrypt) now front the same 14 services through the same Caddy
+  instance. Deliberately left running in parallel from 2026-07-28 so there's a fallback if
+  the Cloudflare token or zone breaks. Revisit after a week or two of the `.ie` names being
+  used in anger: either retire `.lan` and halve the config surface, or keep both and accept
+  that every new service needs adding twice. Note the `.ie` set deliberately **omits
+  `opencode`** (dead backend, see the item above) — don't treat that as an oversight when
+  comparing the two tables.
 
 * **DHCP pool still overlaps the static range** (long-standing, pre-dates this review).
   Recommendation: shrink router DHCP pool to `.100–.200`. Not yet actioned. See

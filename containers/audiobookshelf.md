@@ -9,7 +9,10 @@ timestamp: 2026-07-26T00:00:00Z
 
 CT112, hostname `audiobookshelf`, unprivileged LXC at **192.168.0.26**. Created 2026-07-26
 to *serve and play* the audiobook library over the web and the Audiobookshelf mobile apps,
-at **`https://audiobookshelf.lan`**.
+at **`https://audiobookshelf.lan`** — or **`https://audiobookshelf.133gsl.ie`**, which
+serves a publicly-trusted Let's Encrypt certificate and so needs no per-device CA trust.
+Preferred, especially on phones and the mobile apps. See
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
 
 **It is not the converter.** [audiobooks (CT111)](audiobooks.md) *produces* MP3s into
 `/MediaTank/media/Audiobooks`; CT112 *reads that same directory* and serves it. The two

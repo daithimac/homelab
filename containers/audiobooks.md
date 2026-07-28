@@ -10,7 +10,9 @@ CT111, hostname `audiobooks`, unprivileged LXC at **192.168.0.24**. Created 2026
 turn EPUBs and PDFs into chaptered MP3 audiobooks using the
 [Kokoro TTS service](/containers/docker-stack.md#kokoro-tts-added-2026-07-26) on
 docker-stack. Usable either from the CLI or through a web UI at
-**`https://audiobooks.lan`**.
+**`https://audiobooks.lan`** — or **`https://audiobooks.133gsl.ie`**, which serves a
+publicly-trusted certificate and needs no per-device CA trust. See
+[133gsl.ie on Cloudflare DNS](/playbooks/dns-cloudflare-133gsl-ie.md).
 
 For how to actually run a conversion, see
 [EPUB/PDF to audiobook](/playbooks/epub-to-audiobook.md).
