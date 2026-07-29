@@ -236,9 +236,10 @@ Secondary, acted on: **quantisation is cheap speed — tested, not just predicte
 `Q8_0` ran at 3.26 tok/s (3.22 post-`gtt72`); a `Q4_K_M` was pulled alongside it 2026-07-29
 (14 GB on disk) and measured at **5.63 tok/s** — **1.75×** the Q8, not quite the "roughly
 twice as fast" the halved-bytes prediction implied, but in line with the dense rule's
-`~80 ÷ size-in-GB` (14 GB × 5.63 = 79). Both quants are being kept side by side for now;
-keep/drop is the owner's call on quality vs. that ~1.75× speed. Details and the full
-model-inventory table: [containers/ollama.md](/containers/ollama.md#model-inventory-2026-07-29).
+`~80 ÷ size-in-GB` (14 GB × 5.63 = 79). Decided: the owner kept the `Q4_K_M` and removed
+the `Q8_0` (2026-07-29) — the quality difference wasn't judged worth the Q8's slower
+throughput. Details and the full model-inventory table:
+[containers/ollama.md](/containers/ollama.md#model-inventory-2026-07-29).
 
 Both of these dwarf the UMA question below, which is expected to be a single-digit-percent
 difference either way.
