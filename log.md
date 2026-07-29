@@ -1,5 +1,46 @@
 # Directory Update Log
 
+## 2026-07-28 (3)
+* **Reset the AdGuard admin password on [CT109](containers/adguard.md), and corrected two
+  wrong assumptions on the way there — one of them Dave's, one that would have been mine.**
+  Dave had forgotten the password and asked for a reset over SSH. Before touching anything,
+  read the live `users:` block: one user, `dave`, bcrypt `$2a$` hash, AdGuard **v0.107.78**.
+  **The first wrong assumption was that `adguard.133gsl.ie` wanted a different password.**
+  Dave had gotten into `http://192.168.0.20` and found the `.ie` name still prompting, which
+  reads like a broken reverse proxy or a second credential. It's neither — checked the
+  Caddyfile and there is no `basic_auth` anywhere; `@adguard host adguard.133gsl.ie` proxies
+  straight to `192.168.0.20:80`, the same AdGuard. AdGuard's session cookie is **host-scoped**,
+  so logging in at the raw IP leaves the other two origins unauthenticated. Being logged in
+  at the IP was a surviving *session*, not knowledge of the password — worth separating,
+  because it's what made the reset still necessary.
+  **The second was the assumption that the UI could do it.** Rather than guess from memory
+  or click through Settings, grepped the frontend embedded in the binary: the only password
+  strings are install-time and login, plus `forgot_password`. No `change_password`,
+  `current_password`, `new_password` or `password_changed` key exists, and
+  `/control/profile/update` has no password field. **v0.107.78 has no in-UI password
+  change** — the config edit was the only route, so the answer to "can I do this from the
+  session I already have" is a straight no.
+  **Done without the plaintext ever reaching this side.** Dave ran `htpasswd -nBC 10 dave`
+  locally (prompting, so nothing in shell history) and handed over only the hash. Stopped
+  the service **first** — AdGuard rewrites its config on shutdown, so patching a live file
+  and restarting can silently discard the edit, which the existing rewrites procedure
+  doesn't warn about. Backed up to `AdGuardHome.yaml.bak-20260728-pwd` (`bak-20260728` was
+  already taken by entry (1) the same day), pulled to the host, patched the single bcrypt
+  line in Python with an assertion that **exactly one** line matched — abort otherwise, so
+  an unexpected second match couldn't be edited blind — then `yaml.safe_load` and diffed
+  before pushing back. Diff was one line; all 18 rewrites intact.
+  **`htpasswd`'s `$2y$` prefix was left as-is rather than rewritten to `$2a$`.** Go's bcrypt
+  validates the major version only and ignores the minor, so `$2y` was expected to work;
+  it was flagged to Dave as the first thing to suspect if login failed, and then verified
+  working rather than assumed. Also worth recording: the first post-restart health check
+  probed `127.0.0.1` and returned `connection refused` plus `http 000`, which looks like a
+  dead service — AdGuard binds to `192.168.0.20` specifically. Re-probed on the real
+  address: DNS resolving, `/login.html` 200, `/control/status` 401 unauthenticated. Dave
+  confirmed the login end-to-end.
+  Written up in [DNS via AdGuard](network/dns-adguard.md#admin-password-reset--and-the-session-trap-that-looks-like-a-proxy-bug)
+  with a pointer from [adguard (CT109)](containers/adguard.md); two incidental findings
+  filed in [actions.md](actions.md).
+
 ## 2026-07-28 (2)
 * **Audited every domain reference in the bundle against live config, and found two stale
   claims.** Follow-up to entry (1). Extracted all 17 distinct `.lan` hostnames appearing in

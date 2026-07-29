@@ -3,7 +3,7 @@ type: Architecture
 title: DNS via AdGuard Home
 description: Tailnet-wide DNS design on CT109 — upstream config, local-name rewrites, and why it replaced NextDNS.
 tags: [dns, adguard, tailscale, architecture]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-07-28T00:00:00Z
 ---
 
 [AdGuard Home (CT109, 192.168.0.20)](/containers/adguard.md) is the resolver for all
@@ -135,6 +135,57 @@ use AdGuard**, so it was rolled out fleet-wide rather than reverted. Every guest
 192.168.0.20` (LXCs) — note this does **not** take effect on a running container until it's
 rebooted; `pct set` only rewrites the saved config. See [actions.md](/actions.md) for the
 full rollout record.
+
+# Admin password reset — and the session trap that looks like a proxy bug
+
+**Being logged in at `http://192.168.0.20` tells you nothing about whether you know the
+password.** AdGuard's session cookie is *host-scoped* — set on the origin you logged in at,
+with no `Domain` attribute — so a live session on the raw IP does not carry to
+`https://adguard.lan` or `https://adguard.133gsl.ie`. Those show a login form because they
+are a different origin, **not** because they have a separate credential and **not** because
+the reverse proxy is broken. There is no `basic_auth` anywhere in the Caddyfile; the
+`@adguard` matcher proxies straight to `192.168.0.20:80`, the same AdGuard. Same username,
+same password, three origins, three independent sessions. This cost a detour on 2026-07-28
+and will read as a Caddy fault every time if it isn't written down.
+
+**There is no way to change the password from the web UI on v0.107.78.** Verified by
+grepping the frontend embedded in the binary rather than by hunting through Settings: the
+only password strings present are install-time (`install_auth_password`,
+`install_confirm_password`), login (`password_label`, `form_error_password_length`), and
+`forgot_password` — no `change_password`, `current_password`, `new_password` or
+`password_changed` key exists, and `/control/profile/update` carries no password field.
+The "Forgot password" link is documentation, not a reset flow. Editing the config is the
+only route.
+
+The `users:` block holds one user, `dave`, with a bcrypt hash. To reset (done 2026-07-28):
+
+```bash
+# 1. On the Mac — prompts, so the plaintext never enters shell history.
+#    Hand over only the hash. htpasswd emits $2y$; AdGuard wrote $2a$ originally.
+#    Both are accepted — Go's bcrypt validates the major version only, and $2y verified
+#    working live here, so no prefix rewriting is needed.
+htpasswd -nBC 10 dave
+
+# 2. Stop the service FIRST. AdGuard rewrites this file on shutdown, so patching a live
+#    config and then restarting can silently discard the edit.
+pct exec 109 -- systemctl stop AdGuardHome
+pct exec 109 -- cp -a /opt/AdGuardHome/AdGuardHome.yaml /opt/AdGuardHome/AdGuardHome.yaml.bak-YYYYMMDD-pwd
+pct pull 109 /opt/AdGuardHome/AdGuardHome.yaml /root/agh-pwd.yaml
+
+# 3. Patch the one bcrypt line offline, then validate before pushing back — same reasoning
+#    as the rewrites procedure above. Assert exactly one line matches
+#    ^\s*password:\s*\$2[aby]\$ and abort if not, so an unexpected match can't be edited
+#    blind; then yaml.safe_load, confirm the hash round-trips, and diff.
+pct push 109 /root/agh-pwd.yaml /opt/AdGuardHome/AdGuardHome.yaml
+pct exec 109 -- systemctl start AdGuardHome && pct exec 109 -- systemctl is-active AdGuardHome
+```
+
+**Verify against `192.168.0.20`, never `127.0.0.1`** — AdGuard binds to the interface
+address specifically, so localhost probes return `connection refused` and read as a dead
+service when it's fine. Good post-restart checks: `dig +short jellyfin.lan @192.168.0.20`
+(→ `192.168.0.14`), `curl` `/login.html` (→ 200) and `/control/status` unauthenticated
+(→ 401), plus a rewrite count from the parsed YAML to prove the list survived the
+round-trip.
 
 # Privacy note (asked and answered)
 

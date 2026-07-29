@@ -273,6 +273,27 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 ## P3 — open
 
+* **`/opt/AdGuardHome` on [CT109](/containers/adguard.md) is mode `0755`, and it holds the
+  admin bcrypt hash plus eleven backup copies of it.** Surfaced 2026-07-28 during the
+  password reset — AdGuard logs it itself on every start: `permcheck: warning: found
+  unexpected permissions type=directory path=/opt/AdGuardHome perm=0755 want=0700`.
+  Pre-existing, not introduced by that work. Practical risk today is low: CT109 is a
+  single-purpose unprivileged LXC with no other human accounts, so "world-readable" means
+  little in practice — this is filed for tidiness and because AdGuard has an opinion, not
+  because it's believed to be exposed. Fix is `pct exec 109 -- chmod 0700
+  /opt/AdGuardHome`; verify the service still starts, since permcheck is the thing that
+  cares. Bundle it with the cleanup below.
+
+* **Eleven `AdGuardHome.yaml.bak-*` files have accumulated in `/opt/AdGuardHome`**, one per
+  config-editing session since 2026-07-25 (`bak-20260725`, `-20260725b`, `bak2-20260726`,
+  `-20260726`, `-20260726-abs`, `-20260726-coder`, `-20260728`, `-20260728-pwd`, …). The
+  backup-first habit is right and shouldn't change; the naming is what's drifted, with
+  three mutually inconsistent suffix schemes for the same day. Keep the newest two, bin the
+  rest, and settle on one scheme. Note each of these contains a **valid historical bcrypt
+  hash** — the pre-2026-07-28 ones now hold a superseded password, but they should still be
+  removed rather than left readable, which is why this and the item above want doing in one
+  pass.
+
 * **`192.168.0.25` sits inside the documented static range and belongs to Dave's Mac
   mini** — identified 2026-07-26, downgraded from "unidentified device" but not closed.
   It was found while allocating an address for

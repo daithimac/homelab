@@ -22,6 +22,12 @@ dig @192.168.0.20 <domain>
 pct exec 109 -- journalctl -u AdGuardHome | grep "exchange fa"
 ```
 
+**Locked out of the UI?** The admin password can only be reset by editing
+`/opt/AdGuardHome/AdGuardHome.yaml` — v0.107.78 has no in-UI password change. And note that
+a live session on `192.168.0.20` does *not* carry to `adguard.lan` / `adguard.133gsl.ie`:
+the cookie is host-scoped, so those prompting for a password is normal, not a proxy fault.
+Procedure and evidence: [DNS via AdGuard](/network/dns-adguard.md#admin-password-reset--and-the-session-trap-that-looks-like-a-proxy-bug).
+
 Full upstream config, rewrites, and design rationale:
 [DNS via AdGuard](/network/dns-adguard.md).
 
