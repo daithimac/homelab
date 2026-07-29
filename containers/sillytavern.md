@@ -41,6 +41,24 @@ Connects to [ollama (CT102)](ollama.md) directly over the network
 * Chat: `hf.co/mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest`
 * Embeddings: `mxbai-embed-large`
 
+# Character Hub & CORS Proxy Configuration
+
+When searching or downloading characters from third-party hubs (such as CharacterTavern, PygmalionAI, or WyvernAI), client browser requests are subject to browser CORS policies. SillyTavern includes an internal Node.js CORS proxy to handle these requests, but it is disabled by default (`enableCorsProxy: false`).
+
+If searching character hubs fails with the error message:
+`"Search failed: CORS proxy is disabled. Set enableCorsProxy: true in SillyTavern's config.yaml and restart the server"`
+
+### Resolution
+
+1. Edit `/opt/sillytavern/app/config.yaml` inside CT120 (or from the Proxmox host via `pct exec 120 -- nano /opt/sillytavern/app/config.yaml`):
+   ```yaml
+   enableCorsProxy: true
+   ```
+2. Restart the SillyTavern service:
+   ```bash
+   pct exec 120 -- systemctl restart sillytavern.service
+   ```
+
 # Why CT120, not CT111
 
 The ID jumps from CT109/CT110 straight to CT120, unlike every other guest's sequential

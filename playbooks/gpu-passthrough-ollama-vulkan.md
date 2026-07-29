@@ -124,9 +124,15 @@ systemctl show ollama -p Environment | tr ' ' '\n' | grep -i igpu    # want OLLA
 journalctl -u ollama --no-pager --since "30 sec ago" | grep -iE 'vulkan|vram|dropping|inference compute'
 ```
 Win = `dropping` line GONE, and
-`inference compute ... library=Vulkan ... type=iGPU total="48.0 GiB"`. (It reports ~48GB
-because the iGPU can address system RAM as GTT, so capacity is NOT capped at the dedicated
-UMA frame buffer — currently 32GB, see below — but see the speed note below.)
+`inference compute ... library=Vulkan ... type=iGPU total="63.2 GiB"` (measured 2026-07-29;
+this doc previously said `48.0 GiB`). The figure is **UMA + GTT** — 32 GB frame buffer plus
+31.2 GiB of borrowable system RAM — so capacity is NOT capped at the UMA carve-out. See
+[UMA and GTT](#uma-and-gtt--the-memory-pool-and-how-its-split) for how that splits and why
+it matters more than UMA alone.
+
+Note this host reports the pool correctly. Containerised Ollama on Strix has a known bug
+(#16462) where it reports **2.0 GiB** instead; if you ever see that, it's the bug, not a
+passthrough regression.
 
 # Baseline
 
@@ -137,19 +143,30 @@ Measured 2026-07-29 on the live host, three runs per model, identical prompt
 `OLLAMA_FLASH_ATTENTION=1`, BIOS UMA **32GB**. Both models reported `100% GPU` in
 `ollama ps`.
 
-| Model | Quant | Size | Ctx | Run 1 | Run 2 | Run 3 | Spread |
-|---|---|---|---|---|---|---|---|
-| `Moonlit-Mirage-12B-i1-GGUF:latest` | i1 (~q4) | 7.5 GB | 16384 | 10.94 tok/s | 10.93 tok/s | 10.94 tok/s | 0.1% |
-| `Qwen3.5-4B-...-Heretic-Literotica-i1-GGUF:latest` | i1 (~q4) | 2.7 GB | 16384 | 23.88 tok/s | 23.34 tok/s | 23.84 tok/s | 2.3% |
+| Model | Type | Quant | Size | t/s | Runs |
+|---|---|---|---|---|---|
+| `Qwen3.5-4B-...-Heretic-Literotica-i1-GGUF` | dense | i1 (~q4) | 2.7 GB | **23.88** | 23.88 / 23.34 / 23.84 (2.3% spread) |
+| `gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF` | **MoE ~4B active** | Q4_K_M | 16 GB | **24.77** | 1 |
+| `Melody1437-26B-A4B-v2.0-GGUF` | **MoE ~4B active** | — | 17 GB | **19.73** | 1 |
+| `Moonlit-Mirage-12B-i1-GGUF` | dense | i1 (~q4) | 7.5 GB | **10.94** | 10.94 / 10.93 / 10.94 (0.1% spread) |
+| `Qwen3.6-27B-Fable-Fusion-711-...-GGUF` | dense | — | 18 GB | **4.28** | 1 |
+| `Dolphin-Mistral-24B-Venice-Edition-GGUF` | dense | **Q8_0** | 25 GB | **3.26** | 1 |
 
-Cold load adds ~2.2 s for the 12B, ~3.3 s for the 4B; warm reload is ~0.15 s. Prompt eval
-runs 250–470 tok/s warm.
+Cold load adds ~2.2 s for the 12B, ~3.3 s for the 4B, ~15 s for the 26B MoE and ~20 s for
+the 24B; warm reload is ~0.15 s. Prompt eval runs 250–470 tok/s warm.
 
-**This supersedes the previous `~3.2 tok/s` figure, which was wrong by roughly 3.4×** — not
-merely unqualified. That number carried no model, quant, context or date, and no run in
-this baseline reproduces anything near it. Treat it as retired; it should not be cited
-again. Anything that was reasoned from "iGPU inference here is ~3 tok/s" is worth
-re-examining, because the real 12B figure is ~11 tok/s.
+**On the old `~3.2 tok/s` figure — the honest answer is that it cannot be attributed, and
+two earlier attempts to settle it were both wrong.** The first claimed it was "wrong by
+~3.4×" because it didn't match the 12B. The second claimed it was "correct all along"
+because the 24B Q8 measures 3.26. Both inferred a model from a single matching number.
+What the figure actually constrains is narrow but real: at ~80 GB·tok/s for dense weights
+(below), **3.2 tok/s implies roughly 25 GB of dense weights** — which is satisfied by a 24B
+at Q8 *or* a ~45B at Q4, and nothing on record distinguishes them. Record it as
+"unattributed, implies ~25 GB dense" and stop there.
+
+The lesson bites in both directions: an unqualified tok/s figure can be wrongly *trusted*
+(the original error — cited as if it described this host generally) **and** wrongly
+*dismissed* (both corrections). Always record the model, quant and date.
 
 Note the 4B's `eval count` varies wildly between runs (1810 / 8094 / 2853 tokens) because
 the model ignores the word limit and rambles — **`eval rate` is the stable metric, total
@@ -158,6 +175,55 @@ duration is not**. Compare rates, never wall-clock, when re-running this.
 To reproduce, use the same prompt and model tags and report all three runs. If the spread
 exceeds a few percent, something else is contending for the iGPU and the numbers are not
 comparable.
+
+## Bytes read per token is the lever — which means MoE, not size
+
+The measurements span **3.26 → 24.77 tok/s, a 7.6× range, on identical hardware and
+identical config.** The variable is **how many bytes of weights cross the memory bus per
+token** — not parameter count, and not file size.
+
+For **dense** models those are the same thing, so throughput tracks size inversely and the
+product is near-constant:
+
+| Dense model | Size | tok/s | size × tok/s |
+|---|---|---|---|
+| Qwen3.5-4B | 2.7 GB | 23.88 | 64 |
+| Moonlit-Mirage-12B | 7.5 GB | 10.94 | 82 |
+| Qwen3.6-27B-Fable | 18 GB | 4.28 | 77 |
+| Dolphin-Mistral-24B Q8 | 25 GB | 3.26 | 81 |
+
+**For dense models on this box: `tok/s ≈ 80 ÷ size in GB`.** Accurate to a few percent
+above ~7 GB (the 4B undershoots because fixed overheads dominate when the model is tiny).
+
+**For MoE models that rule is meaningless**, because only the active experts are read per
+token:
+
+| MoE model | Size | Active | tok/s | Dense rule would predict |
+|---|---|---|---|---|
+| gemma-4-26B-A4B | 16 GB | ~4B | **24.77** | 5.0 |
+| Melody1437-26B-A4B | 17 GB | ~4B | **19.73** | 4.7 |
+
+Off by **5×**. An earlier revision of this section stated `80 ÷ GB` as a universal rule for
+this host — it is dense-only, and every model measured at the time happened to be dense,
+which is exactly why the error survived being "validated".
+
+**The practical consequence, and it is the single most useful finding here:**
+
+> The **fastest** model on this box is also one of the **largest**. `gemma-4-26B-A4B` at
+> 16 GB runs at 24.77 tok/s — faster than the 7.5 GB dense 12B (10.94) and **5.8× faster
+> than the 18 GB dense 27B** (4.28), which is nearly the same file size.
+
+So: **total size decides whether it fits; active parameters decide how fast it runs.** When
+choosing a model here, read the name for an `A<n>B` suffix (`26B-A4B` = 26B total, 4B
+active) before reading the file size. On this hardware **MoE is not a nice-to-have, it is
+the difference between usable and not** — and dense above ~12B is largely not viable.
+
+Secondary, still worth acting on: **quantisation is cheap speed.** The 24B is a `Q8_0` at
+3.26 tok/s; its `Q4_K_M` would be roughly half the bytes and therefore roughly **twice as
+fast**, for a quality difference that is small at 24B.
+
+Both of these dwarf the UMA question below, which is expected to be a single-digit-percent
+difference either way.
 
 # Tuning notes
 
@@ -169,50 +235,103 @@ comparable.
   for memory pressure — it's the first suspect if loads crawl or OOM. This is why
   `OLLAMA_MAX_LOADED_MODELS` matters: pinning is indefinite, so the model cap is the only
   thing bounding total held memory.
-* Discovery may set a huge `default_num_ctx` (e.g. 262144) because it sees ~48GB. The
-  explicit `OLLAMA_CONTEXT_LENGTH=16384` overrides per-model; keep it set.
+* Discovery may set a huge `default_num_ctx` (262144, confirmed in the logs 2026-07-29)
+  because it sees the full UMA+GTT pool. The explicit `OLLAMA_CONTEXT_LENGTH=16384`
+  overrides per-model; keep it set.
 
-# The real performance lever: BIOS UMA frame buffer
+# UMA and GTT — the memory pool, and how it's split
 
-Generation runs at **~10.9 tok/s for a 12B q4 and ~23.8 tok/s for a 4B q4** (see
-[Baseline](#baseline) for the full method). iGPU inference is **memory-bandwidth bound** on
-DDR5, so the ceiling is inherent, not a misconfig. More CPU cores don't help (bandwidth,
-not compute, is the limit). The one hardware lever is dedicated VRAM in BIOS:
+Previously headed "the real performance lever: BIOS UMA frame buffer". That framing was
+wrong twice over and has been corrected: **model architecture is the real lever** (7.6×,
+see [above](#bytes-read-per-token-is-the-lever--which-means-moe-not-size)), and UMA is only
+half of the memory story.
+
+iGPU inference is **memory-bandwidth bound** on DDR5, so the ceiling is inherent, not a
+misconfig. More CPU cores don't help (bandwidth, not compute, is the limit).
+
+There are **two** pools the iGPU can draw on, and this doc previously only discussed one:
+
+* **UMA** — the BIOS frame buffer. **Permanently stolen** from the OS: the host sees 62Gi
+  of 96GB physical because 32GB is carved out before boot.
+* **GTT** — system RAM the GPU **borrows and gives back**. Governed by the kernel's TTM
+  `pages_limit`, not by BIOS.
+
+Live state as of 2026-07-29:
+
+```bash
+cat /proc/cmdline                                              # no ttm.* params set
+cat /sys/module/ttm/parameters/pages_limit                     # 8180431 pages = 31.2 GiB
+cat /sys/class/drm/card1/device/mem_info_gtt_total             # 33507045376 = 31.2 GiB
+```
+
+So the iGPU addresses **32 GB UMA + 31.2 GiB GTT ≈ 63.2 GiB**, which is exactly what Ollama
+reports (`total="63.2 GiB" available="63.0 GiB"`). The GTT half is at the kernel default —
+**no `ttm.pages_limit` has ever been set on this host.**
+
+**This inverts the advice this doc has been carrying.** The received wisdom for this exact
+chip (Ryzen AI 9 HX 370 / gfx1150 / Strix Point) is **small UMA, large GTT** — 8–16GB UMA,
+with `ttm.pages_limit` raised to cover the rest — because UMA is permanently lost while GTT
+is only borrowed. Raising GTT is done at the bootloader, needs no BIOS trip, and is
+reversible:
+
+```
+ttm.pages_limit=18874368 ttm.page_pool_size=18874368     # 72GB (pages × 4KiB)
+```
+
+Note `amdgpu.gttsize` is deprecated on current kernels (warns, then ignores you), and
+`amdttm.pages_limit` is for the out-of-tree DKMS module. Verify by reading
+`mem_info_gtt_total` back, never by trusting the config.
+
+The counterweight: UMA measures roughly **+11% faster than GTT** for the same capacity, so
+the trade is ~11% throughput against 16–24GB permanently returned to the fleet. That, not
+"32 vs 24", is the real decision — see [actions.md](/actions.md).
+
+The BIOS steps themselves, if changing UMA:
 
 1. Shut down guests cleanly, reboot host, enter BIOS (`Del` or `F2`).
 2. Path is firmware-dependent: `Advanced → AMD CBS → NBIO Common Options → GFX
    Configuration` (or `UMA Frame Buffer Size`), set UMA mode to
    `UMA_SPECIFIED`/`Manual`.
 3. **Currently 32GB** (`dmesg | grep -i 'VRAM:'` → `VRAM: 32768M`, confirmed live
-   2026-07-25 — this doc previously said "currently 2GB," which was stale; someone
-   applied a BIOS change at some point without updating this line). This is *above* the
-   documented sweet spot: **24GB** covers a q4 30B model (~18GB) + KV headroom while
-   leaving 72GB for host + guests out of 96GB physical; 16GB if only running ≤13B models;
-   32GB was flagged as "defensible but marginal past 24" even before this was checked —
-   right now it's costing every other guest 8GB of headroom versus the 24GB target.
+   2026-07-25 and again 2026-07-29 — this doc previously said "currently 2GB," which was
+   stale). The old "24GB sweet spot" reasoning here was built on covering *a q4 30B dense
+   model (~18GB) in UMA*, which the Baseline now shows is the wrong model class to design
+   around: the 18GB dense 27B runs at 4.28 tok/s and is not a sensible daily driver at any
+   UMA size, while the 16GB MoE that *is* worth running fits comfortably either way.
    **This doc previously claimed there was "no measured inference benefit over 24GB". That
-   claim was never true and has been removed: 24GB has never been run.** The only
-   measurements that exist — the [Baseline](#baseline) above — were taken at 32GB, so they
-   are the A-side of an A/B whose B-side is still outstanding. See
-   [actions.md](/actions.md) for the decision, and the A/B procedure below.
-4. **The outstanding A/B.** With a repeatable baseline now in hand, the 24GB question is
-   finally answerable. Set UMA to 24GB per step 2, confirm `dmesg | grep -i 'VRAM:'` reads
-   `24576M` and `free -h` shows ~70Gi rather than 62Gi, then re-run the exact Baseline
-   prompt and models and compare `eval rate`. Decision rule, fixed in advance so the result
-   is not rationalised afterwards: **if 24GB costs less than ~5% on tok/s (i.e. the 12B
-   stays above ~10.4 tok/s), keep 24GB** and bank the 8GB for the rest of the fleet;
-   if it costs materially more, 32GB is vindicated and the item closes as "measured,
-   keeping 32GB". Expect a modest difference either way — the iGPU addresses system RAM as
-   GTT and reports ~48GB regardless, so this is about allocation cleanliness for hot
-   weights, not capacity.
-5. Save (`F10`), reboot. Verify on host: `dmesg | grep -i 'VRAM:'` reads back your target
-   (e.g. `24576M` for 24GB).
+   claim was never true and has been removed: 24GB has never been run.**
+4. Save (`F10`), reboot. Verify on host: `dmesg | grep -i 'VRAM:'` reads back your target
+   (e.g. `24576M` for 24GB), and `free -h` reflects the returned RAM.
 
-Dedicated UMA gives cleaner allocation for hot weights than GTT spill, but it's a
-**modest** gain, not the CPU→GPU night-and-day. A 30B model will still be slow; match
-model size to the hardware (7–14B q4 is the pleasant range).
+## The A/B worth running
+
+The originally-planned test was **32GB vs 24GB UMA**. That is now the *less* interesting
+question — 8GB either way, on the pool that costs the fleet permanently, for an expected
+single-digit-percent throughput difference.
+
+The better test, given GTT has never been touched here:
+
+* **A-side** — current: UMA 32GB, GTT 31.2 GiB (default), pool 63.2 GiB. Baseline figures
+  above.
+* **B-side** — UMA **16GB** in BIOS, plus `ttm.pages_limit=18874368` on the kernel command
+  line. Returns **16GB permanently to the fleet** (host should show ~78Gi, not 62Gi) while
+  *growing* the addressable pool.
+
+Verify both halves before benchmarking — `dmesg | grep -i 'VRAM:'` for UMA,
+`cat /sys/class/drm/card1/device/mem_info_gtt_total` for GTT, and Ollama's `total=` line
+for the sum. Then re-run the exact Baseline prompt and models.
+
+Decision rule, fixed in advance: **if the MoE (`gemma-4-26B-A4B`, the model actually worth
+running) stays within ~10% of 24.77 tok/s, take the B-side** — 16GB back to the fleet is
+worth a modest throughput cost. If it drops materially more than that, UMA is doing real
+work and 32GB stands.
+
+Note the GTT half can be tested **without a BIOS trip at all** — `ttm.pages_limit` is a
+kernel parameter, so it needs a reboot but not console access. That half is separable and
+much cheaper to try first.
 
 # Citations
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
-[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs, `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:` (Baseline section, live override contents, concurrency bounds)
+[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (6 models), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
+[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, and Ollama bug #16462. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.77 here — different stack, same regime. Treat as cross-reference, not as a description of this host.

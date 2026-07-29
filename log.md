@@ -1,5 +1,68 @@
 # Directory Update Log
 
+## 2026-07-29 (3)
+* **Documented resolution for SillyTavern CORS proxy error when searching external character hubs.**
+  Character searches from hubs like CharacterTavern, PygmalionAI, and WyvernAI fail with `"Search failed: CORS proxy is disabled. Set enableCorsProxy: true in SillyTavern's config.yaml and restart the server"`. The Node.js backend proxy must be enabled to proxy requests around browser CORS restrictions. Setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and executing `systemctl restart sillytavern.service` resolves the failure. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (2)
+* **Dave pointed out that Phases 0–2 produced no throughput improvement. Chasing that down
+  found the actual lever — and caught me getting the same class of thing wrong twice, in
+  opposite directions, before evidence settled it.**
+  The observation was correct and always going to be: Phase 0 was measurement only, Phase 1
+  reclaimed disk, and Phase 2's own plan text predicted "this should not change
+  single-stream tok/s". Worth stating plainly rather than letting "efficiency plan" imply
+  speed that was never on the table.
+  **Wrong turn one.** Reasoning that inference is bandwidth-bound, I predicted the 25 GB
+  `Dolphin-Mistral-24B` **Q8_0** would run at ~3.3 tok/s. It measured **3.26** — matching
+  the bundle's old `~3.2 tok/s` figure almost exactly, so I concluded that figure had been
+  **correct all along** and that entry (1)'s "wrong by ~3.4×" claim was the error.
+  **Wrong turn two.** Dave held the correction, noting the likely source discussed **Q4**
+  models rather than Q8. That undercuts the match: a Q4 at ~3.2 tok/s implies roughly a 45B
+  dense model, not the 24B. **Both of my readings inferred a model from one matching
+  number.** The defensible statement is narrow: 3.2 tok/s implies **~25 GB of dense
+  weights**, satisfied by a 24B at Q8 or a ~45B at Q4, and nothing on record distinguishes
+  them. Now recorded as "unattributed, implies ~25 GB dense", with both wrong turns left
+  visible — an unqualified measurement can be wrongly *dismissed* as easily as wrongly
+  *trusted*, and this one managed both inside a few hours.
+  **Then Dave supplied a benchmark writeup covering the same silicon** (Ryzen AI 9 HX 370 /
+  Radeon 890M / gfx1150 / 96GB DDR5-5600, but on Unraid + llama.cpp rather than this host's
+  Proxmox + Ollama, 13 models). Its central claim — **speed is set by bytes read per token,
+  not parameter count** — exposed a real error in what I had just written into the bundle.
+  I had generalised `tok/s ≈ 80 ÷ size in GB` as a rule for this host. **It is a dense-only
+  rule.** Every model I had benchmarked happened to be dense, which is precisely why it
+  looked validated. Tested it directly against `gemma-4-26B-A4B` (16 GB, MoE, ~4B active):
+  the rule predicts 5 tok/s, it measured **24.77** — off by 5×.
+  **The finding that actually answers Dave's question.** Six models now measured on
+  identical hardware and config, spanning **3.26 → 24.77 tok/s (7.6×)**:
+  the 16 GB MoE gemma at **24.77**, the 2.7 GB dense 4B at 23.88, the 17 GB MoE
+  `Melody1437-26B-A4B` at **19.73**, the 7.5 GB dense 12B at 10.94, the 18 GB **dense**
+  `Qwen3.6-27B` at **4.28**, and the 25 GB dense 24B Q8 at 3.26. **The fastest model in the
+  store is also one of the largest**, and it beats a nearly identically-sized dense model by
+  **5.8×**. For dense models `80 ÷ GB` holds to a few percent (products: 64 / 82 / 77 / 81);
+  for MoE it is meaningless. Total size decides whether it fits; **active** parameters
+  decide how fast it runs — check the name for an `A<n>B` suffix before the file size.
+  **Second finding, from checking the writeup's claims against live state: GTT has never
+  been touched here.** `/proc/cmdline` carries no `ttm.*` parameters, so the borrowable
+  pool sits at the kernel default — `pages_limit` 8180431 pages = **31.2 GiB**, confirmed
+  against `mem_info_gtt_total`. The iGPU therefore addresses 32 GB UMA + 31.2 GiB GTT =
+  **63.2 GiB**, which is exactly what Ollama reports and which also corrects a stale
+  `48.0 GiB` win-condition in the playbook. This **inverts the guidance the playbook has
+  been carrying**: UMA is permanently stolen, GTT is borrowed and returned, and the standing
+  advice for this chip is *small UMA, large GTT* — the opposite of this host. So the Phase 3
+  A/B has been re-scoped from "32 vs 24GB UMA" (8GB, needs BIOS) to "16GB UMA + raised
+  `ttm.pages_limit`" (16GB returned, and **the GTT half needs only a reboot, not console
+  access**). Also confirmed this host is *not* affected by Ollama bug #16462 — it reports
+  the pool correctly rather than 2.0 GiB.
+  Renamed the playbook's "The real performance lever: BIOS UMA frame buffer" — wrong twice
+  over — and rewrote that section to cover both pools. Updated
+  [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md),
+  [containers/ollama.md](containers/ollama.md) (inventory re-sorted by measured speed, with
+  dense/MoE marked), and [actions.md](actions.md) (Resolved entry corrected again, UMA item
+  re-scoped, two new P2s for GTT and for the model mix). The writeup is cited as a
+  cross-reference, explicitly **not** as a description of this host — different OS and
+  different inference stack, though its gemma-4-26B-A4B at 29.5 tok/s against 24.77 here
+  puts them in the same regime.
+
 ## 2026-07-29 (1)
 * **Executed the local-AI efficiency plan — measure first, then act. Phases 0–2 are done;
   Phase 3 needs Dave at the BIOS. The headline is that the bundle's single inference

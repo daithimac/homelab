@@ -14,6 +14,9 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 ## Resolved
 
+* ~~**SillyTavern character search (CharacterTavern, PygmalionAI, WyvernAI) fails with CORS proxy error.**~~
+  **Fixed / Documented 2026-07-29.** External character hub searches require SillyTavern's built-in CORS proxy to bypass browser cross-origin restrictions. `enableCorsProxy` defaults to `false` in `config.yaml`. Resolved by setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and restarting `sillytavern.service` (`pct exec 120 -- systemctl restart sillytavern.service`). Documented on [sillytavern (CT120)](/containers/sillytavern.md#character-hub--cors-proxy-configuration).
+
 * ~~**AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**~~
   **Fixed 2026-07-29.** `vm-103-disk-0` (docker-stack's 200G data disk) was thickly
   provisioned because the AIVault storage is `sparse 0` in `/etc/pve/storage.cfg`, so ZFS
@@ -55,13 +58,19 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   [ollama (CT102)](/containers/ollama.md#concurrency-bounds).
 
 * ~~**The bundle's only inference measurement was `~3.2 tok/s`, unqualified.**~~
-  **Replaced 2026-07-29.** No model, quant, context or date was recorded alongside it, and
-  it was load-bearing for the UMA decision. Benchmarked properly and **the old figure turns
-  out to have been wrong by ~3.4×, not merely unqualified** — the real 12B q4 number is
-  ~10.9 tok/s and the 4B is ~23.8 tok/s. Retired from the playbook and replaced with a
-  qualified [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) table (three
-  runs per model, full config, reproduction instructions). Anything previously reasoned
-  from "iGPU inference here is ~3 tok/s" is worth re-examining.
+  **Replaced 2026-07-29** with a qualified
+  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) table — **six models**,
+  full config and reproduction instructions (three runs each for the first two; single runs
+  for the four added later).
+  **Note two mistakes made and corrected the same day, in opposite directions.** The first
+  version of this entry claimed the old figure was "wrong by ~3.4×" because it didn't match
+  the 12B (10.94 tok/s). The second claimed it was "correct all along" because the 24B Q8
+  returned 3.26 tok/s. **Both inferred a model from a single matching number, and neither
+  is supportable.** What the figure genuinely constrains is **~25 GB of dense weights** —
+  satisfied by a 24B at Q8 *or* a ~45B at Q4, with nothing on record distinguishing them.
+  Recorded as "unattributed, implies ~25 GB dense". An unqualified measurement can be
+  wrongly *dismissed* just as easily as wrongly *trusted*, and both happened to this one
+  within a few hours.
 
 * ~~**The 90.6G Ollama model store had never been inventoried.**~~ **Inventoried
   2026-07-29.** Only one model was documented anywhere in the bundle, leaving ~80G
@@ -309,20 +318,60 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   inference benefit over 24GB". **That was never true and has been struck from both this
   item and the playbook — 24GB has never been run.** The item had been deferred twice on
   the strength of an assertion no measurement supported.
-  **The blocker is now removed:** a repeatable benchmark exists as of 2026-07-29
-  (`Moonlit-Mirage-12B` at 10.94/10.93/10.94 tok/s, 0.1% spread; `Qwen3.5-4B` at ~23.8
-  tok/s, 2.3% spread — see the playbook's
-  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline)). Those figures **are
-  the A-side**, taken at 32GB. What remains is purely the B-side.
-  **Decision rule fixed in advance** so the outcome is not rationalised after the fact:
-  set UMA to 24GB, confirm `VRAM: 24576M` and `free -h` ~70Gi, re-run the identical
-  benchmark — **if the 12B stays above ~10.4 tok/s (<5% cost), keep 24GB** and bank the
-  8GB; if it costs materially more, close as "measured, keeping 32GB". Either way this
-  closes rather than defers a third time.
-  **Still needs Dave at the console** — BIOS access and a full host reboot with guests shut
-  down cleanly; cannot be done remotely. This is the only remaining step of the
-  2026-07-29 local-AI efficiency work. See
-  [GPU passthrough & Ollama on Vulkan](/playbooks/gpu-passthrough-ollama-vulkan.md#the-real-performance-lever-bios-uma-frame-buffer).
+  **The blocker is now removed:** a repeatable benchmark exists as of 2026-07-29 (six
+  models — see the playbook's
+  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline)), and those figures
+  **are the A-side**, taken at 32GB.
+  **But the test itself has been re-scoped, because "32 vs 24" turns out to be the less
+  interesting question.** Two findings changed it. First, the "24GB sweet spot" reasoning
+  was built on fitting *a q4 30B dense model (~18GB)* into UMA — and the benchmark shows
+  that model class is not worth designing around here (the 18GB dense 27B runs at 4.28
+  tok/s; the 16GB MoE that *is* worth running fits comfortably either way). Second, UMA is
+  only half the memory story: the iGPU also draws on **GTT**, which is *borrowed* rather
+  than permanently stolen, and which has never been tuned on this host (see the new GTT
+  item below).
+  **The A/B now worth running** is UMA **16GB** + raised `ttm.pages_limit`, against the
+  current 32GB + default GTT. That returns **16GB permanently to the fleet** rather than
+  8GB, while *growing* the addressable pool. Decision rule fixed in advance: **if
+  `gemma-4-26B-A4B` — the model actually worth running — stays within ~10% of 24.77 tok/s,
+  take the 16GB side.** The counterweight to price in: UMA measures roughly **+11% faster
+  than GTT** for equivalent capacity, so expect to pay something.
+  **The GTT half needs only a reboot, not BIOS access**, so it is separable and much
+  cheaper to try first — and it is *not* blocked on Dave being at the console. Only the UMA
+  half is. See
+  [UMA and GTT](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
+
+* **`ttm.pages_limit` has never been set on this host, and GTT is sitting at the kernel
+  default of 31.2 GiB.** Found 2026-07-29. `/proc/cmdline` carries no `ttm.*` parameters at
+  all, so the iGPU's borrowable system-RAM pool is whatever the kernel picked. The iGPU
+  addresses **32 GB UMA + 31.2 GiB GTT = 63.2 GiB** (matches Ollama's own `total=` line).
+  This is the counterpart to the UMA item below and the cheaper half of it: GTT is
+  **borrowed and returned**, where UMA is **permanently stolen** from the OS — which is why
+  the standing guidance for this exact chip is *small UMA, large GTT*, the opposite of how
+  this host is configured. Raising it is a kernel command-line change:
+  `ttm.pages_limit=18874368 ttm.page_pool_size=18874368` (72GB; pages × 4KiB). **Needs a
+  reboot but not BIOS access**, so unlike the UMA question it does not need Dave at the
+  console. Verify by reading `/sys/class/drm/card1/device/mem_info_gtt_total` back, not by
+  trusting the config. Note `amdgpu.gttsize` is deprecated on current kernels and
+  `amdttm.pages_limit` is for the out-of-tree DKMS module — neither will work.
+
+* **Two of the seven models are slow dense models that the MoEs already beat, and the 24B
+  is a `Q8_0` costing ~2× throughput.** Found 2026-07-29 while benchmarking. The full
+  measured table is on [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29);
+  the short version is that **the fastest model in the store is also one of the largest**:
+  `gemma-4-26B-A4B` (16 GB, MoE, ~4B active) runs at **24.77 tok/s**, against **4.28** for
+  the 18 GB dense `Qwen3.6-27B` and **3.26** for the 25 GB dense `Dolphin-Mistral-24B` Q8.
+  Nearly the same file sizes, **5.8× apart**.
+  Two candidate actions, neither taken unilaterally since model choice is a preference, not
+  a defect: (a) re-pull the 24B at `Q4_K_M` — roughly half the bytes, so roughly **6–7
+  tok/s**, for a quality difference that is small at 24B, and it costs one `ollama pull`;
+  (b) drop or demote the two slow dense models, which are doing nothing the MoEs don't do
+  faster. Storage is no longer a reason to prune (AIVault is no longer capped), but speed
+  is.
+  **The general rule, worth internalising before the next download:** total size decides
+  whether it fits, **active** parameters decide how fast it runs. Check the model name for
+  an `A<n>B` suffix before checking the file size. See
+  [bytes read per token](/playbooks/gpu-passthrough-ollama-vulkan.md#bytes-read-per-token-is-the-lever--which-means-moe-not-size).
 
 * **AIVault has no pool-usage alert, and as of 2026-07-29 nothing structurally guarantees
   docker-stack's disk can't be starved.** Introduced deliberately by dropping the 203G
