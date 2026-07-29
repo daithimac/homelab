@@ -297,19 +297,21 @@ difference either way.
   throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service active.
 * **Software-currency check (Ollama + Mesa) 2026-07-29 — neither upgraded, both within
   acceptable margin.** Installed Ollama **0.31.1**, latest GitHub release **v0.32.5**
-  (`api.github.com/repos/ollama/ollama/releases/latest`) — one minor version ahead, which
-  is inside the "couple of minor versions" no-upgrade threshold set in advance, so the
-  installer was not run and no snapshot was taken. Mesa: installed
+  (`api.github.com/repos/ollama/ollama/releases/latest`) — one minor version ahead of
+  installed. **Decision rule, fixed in advance:** upgrade only when the installed release
+  is two or more minor versions (or a major) behind — 0.31.1 vs v0.32.5 is one minor, so
+  skip; installer was not run and no snapshot was taken. Mesa: installed
   **25.0.7-2~bpo12+1**, `apt-cache policy mesa-vulkan-drivers` candidate is the **same**
-  version — nothing ≥25.3 is available in bookworm-backports, so Mesa 25.3+ is not
-  currently reachable on this host without pulling from trixie/testing, which is out of
-  scope given the glibc/libdrm risk to the working Vulkan chain. Citation [3] measured a
-  stale llama.cpp build at 56% slower and Mesa 25.3+ at +19.8% prefill on the same
-  silicon (Unraid/llama.cpp stack, not this host) — neither figure was reproduced here
-  since neither upgrade path was actionable; recorded as a cross-reference only.
-  **Decision rule, fixed in advance:** upgrade only if the release is materially ahead
-  (multiple minors or a major) or a genuinely newer backports Mesa exists — neither held,
-  so this was a no-op by design, not a skipped check. No benchmarking run (nothing was
+  version. **Decision rule, fixed in advance:** upgrade only if a genuinely newer
+  backports version exists — binary, and it does not here, so Mesa 25.3+ stays out of
+  reach without pulling from trixie/testing, which is out of scope given the
+  glibc/libdrm risk to the working Vulkan chain. Revisit when bookworm-backports itself
+  ships ≥25.3, or if CT102 is ever rebuilt on trixie — not before; the +19.8% prefill
+  upside from [3] does not justify pulling toolchain libraries across a Debian release
+  boundary into the working Vulkan chain. Citation [3] measured a stale llama.cpp build
+  at 56% slower and Mesa 25.3+ at +19.8% prefill on the same silicon (Unraid/llama.cpp
+  stack, not this host) — neither figure was reproduced here since neither upgrade path
+  was actionable; recorded as a cross-reference only. No benchmarking run (nothing was
   upgraded), no snapshot exists post-check (`pct listsnapshot 102` shows only `current`).
   Final state: Ollama 0.31.1, Mesa 25.0.7-2~bpo12+1, both unchanged.
 
