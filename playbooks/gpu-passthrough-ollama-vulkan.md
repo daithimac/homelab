@@ -124,9 +124,10 @@ systemctl show ollama -p Environment | tr ' ' '\n' | grep -i igpu    # want OLLA
 journalctl -u ollama --no-pager --since "30 sec ago" | grep -iE 'vulkan|vram|dropping|inference compute'
 ```
 Win = `dropping` line GONE, and
-`inference compute ... library=Vulkan ... type=iGPU total="63.2 GiB"` (measured 2026-07-29;
-this doc previously said `48.0 GiB`). The figure is **UMA + GTT** — 32 GB frame buffer plus
-31.2 GiB of borrowable system RAM — so capacity is NOT capped at the UMA carve-out. See
+`inference compute ... library=Vulkan ... type=iGPU total="104.0 GiB"` (measured 2026-07-29
+after the GTT raise; it read `63.2 GiB` earlier that same day at the kernel-default GTT, and
+this doc before that said `48.0 GiB`). The figure is **UMA + GTT** — 32 GB frame buffer plus
+72 GiB of borrowable system RAM — so capacity is NOT capped at the UMA carve-out. See
 [UMA and GTT](#uma-and-gtt--the-memory-pool-and-how-its-split) for how that splits and why
 it matters more than UMA alone.
 
@@ -332,35 +333,71 @@ There are **two** pools the iGPU can draw on, and this doc previously only discu
 * **GTT** — system RAM the GPU **borrows and gives back**. Governed by the kernel's TTM
   `pages_limit`, not by BIOS.
 
-Live state as of 2026-07-29:
+Live state as of 2026-07-29, after the GTT raise applied that evening (GTT was at the
+31.2 GiB kernel default — 8180431 pages, no `ttm.*` parameter ever set — until then):
 
 ```bash
-cat /proc/cmdline                                              # no ttm.* params set
-cat /sys/module/ttm/parameters/pages_limit                     # 8180431 pages = 31.2 GiB
-cat /sys/class/drm/card1/device/mem_info_gtt_total             # 33507045376 = 31.2 GiB
+cat /proc/cmdline                     # ...ro quiet ttm.pages_limit=18874368 ttm.page_pool_size=18874368
+cat /sys/module/ttm/parameters/pages_limit                     # 18874368 pages = 72 GiB
+cat /sys/class/drm/card1/device/mem_info_gtt_total             # 77309411328 = 72 GiB
 ```
 
-So the iGPU addresses **32 GB UMA + 31.2 GiB GTT ≈ 63.2 GiB**, which is exactly what Ollama
-reports (`total="63.2 GiB" available="63.0 GiB"`). The GTT half is at the kernel default —
-**no `ttm.pages_limit` has ever been set on this host.**
+So the iGPU addresses **32 GB UMA + 72 GiB GTT ≈ 104 GiB**, which is exactly what Ollama
+reports (`total="104.0 GiB" available="103.8 GiB"`; it was `total="63.2 GiB"` before the
+raise).
 
-**This inverts the advice this doc has been carrying.** The received wisdom for this exact
-chip (Ryzen AI 9 HX 370 / gfx1150 / Strix Point) is **small UMA, large GTT** — 8–16GB UMA,
-with `ttm.pages_limit` raised to cover the rest — because UMA is permanently lost while GTT
-is only borrowed. Raising GTT is done at the bootloader, needs no BIOS trip, and is
-reversible:
+**This applies the advice that had inverted what this doc was carrying.** The received
+wisdom for this exact chip (Ryzen AI 9 HX 370 / gfx1150 / Strix Point) is **small UMA,
+large GTT** — because UMA is permanently lost while GTT is only borrowed. The GTT half was
+applied 2026-07-29 at the bootloader — no BIOS trip needed, reversible by restoring the
+pre-change backup at `/root/grub.bak-20260729`:
 
 ```
-ttm.pages_limit=18874368 ttm.page_pool_size=18874368     # 72GB (pages × 4KiB)
+GRUB_CMDLINE_LINUX_DEFAULT="quiet ttm.pages_limit=18874368 ttm.page_pool_size=18874368"
 ```
 
-Note `amdgpu.gttsize` is deprecated on current kernels (warns, then ignores you), and
-`amdttm.pages_limit` is for the out-of-tree DKMS module. Verify by reading
-`mem_info_gtt_total` back, never by trusting the config.
+in `/etc/default/grub` (18874368 pages × 4KiB = 72GB), then `update-grub` (this host boots
+GRUB — root is LVM, no `/etc/kernel/cmdline`, `proxmox-boot-tool status` reports no
+proxmox-boot-uuids) and a full-fleet reboot. Note `amdgpu.gttsize` is deprecated on current
+kernels (warns, then ignores you), and `amdttm.pages_limit` is for the out-of-tree DKMS
+module. Verify by reading `mem_info_gtt_total` back, never by trusting the config.
+
+**Full-fleet shutdown kills LAN DNS.** Shutting every guest down for the reboot takes
+AdGuard (CT109 — the network's only DNS) down with the rest, so any remote or automated
+actor driving the maintenance loses name resolution mid-operation. That is exactly what
+severed the session running the 2026-07-29 change, mid-shutdown-loop. Sequence AdGuard
+last and expect the outage.
+
+The 72 GiB pool exceeding the host's visible 62Gi is normal — GTT is pageable, not
+reserved — but a load that actually approached the ~104 GiB ceiling would OOM the host,
+and on unified memory a GPU OOM hard-locks the machine. The guards: CT102's cgroup limit
+(`memory: 49152` in `/etc/pve/lxc/102.conf`, confirmed before the reboot) turns a runaway
+load into one dead container instead of a dead host, and nothing in the store comes near
+the ceiling (largest model 25 GB).
+
+**GTT's value is capacity (larger models loadable), not speed — and the benchmark confirms
+it.** Full 7-model run after the raise (label `gtt72`, three runs each, same harness,
+prompt and config as Baseline):
+
+| Model | Baseline t/s | gtt72 t/s | Δ |
+|---|---|---|---|
+| `Qwen3.5-4B-...-Literotica-i1` | 23.54 | 23.43 | −0.5% |
+| `gemma-4-26B-A4B-...` (MoE) | 24.82 | 24.49 | −1.3% |
+| `Melody1437-26B-A4B-v2.0` (MoE) | 19.71 | 19.29 | −2.1% |
+| `Moonlit-Mirage-12B-i1` | 10.88 | 10.81 | −0.6% |
+| `Qwen3.6-27B-Fable-Fusion-711-...` | 4.28 | 4.23 | −1.2% |
+| `Dolphin-Mistral-24B-...` Q8_0 | 3.26 | 3.22 | −1.2% |
+| `MistralRP-Noromaid-...-7B` Q8_0 | 10.43 | 10.32 | −1.1% |
+
+**Decision rule, fixed in advance:** GTT kept regardless (its value is capacity), but a >3%
+drop on any model would have meant something *else* changed in the reboot and demanded
+investigation. **Verdict: flat** — every model within 2.2% of Baseline, inside the
+run-to-run noise band. Final state: `ttm.pages_limit=18874368`, pool 104 GiB, throughput
+unchanged.
 
 The counterweight: UMA measures roughly **+11% faster than GTT** for the same capacity, so
-the trade is ~11% throughput against 16–24GB permanently returned to the fleet. That, not
-"32 vs 24", is the real decision — see [actions.md](/actions.md).
+the *remaining* decision is the UMA half — whether to hand 16–24GB back to the fleet. That,
+not "32 vs 24", is the real question — see [actions.md](/actions.md).
 
 The BIOS steps themselves, if changing UMA:
 
@@ -385,10 +422,10 @@ The originally-planned test was **32GB vs 24GB UMA**. That is now the *less* int
 question — 8GB either way, on the pool that costs the fleet permanently, for an expected
 single-digit-percent throughput difference.
 
-The better test, given GTT has never been touched here:
+The better test:
 
-* **A-side** — current: UMA 32GB, GTT 31.2 GiB (default), pool 63.2 GiB. Baseline figures
-  above.
+* **A-side** — UMA 32GB, GTT 31.2 GiB (default), pool 63.2 GiB. Baseline figures above.
+  (Live state until 2026-07-29.)
 * **B-side** — UMA **16GB** in BIOS, plus `ttm.pages_limit=18874368` on the kernel command
   line. Returns **16GB permanently to the fleet** (host should show ~78Gi, not 62Gi) while
   *growing* the addressable pool.
@@ -402,12 +439,13 @@ running) stays within ~10% of 24.82 tok/s, take the B-side** — 16GB back to th
 worth a modest throughput cost. If it drops materially more than that, UMA is doing real
 work and 32GB stands.
 
-Note the GTT half can be tested **without a BIOS trip at all** — `ttm.pages_limit` is a
-kernel parameter, so it needs a reboot but not console access. That half is separable and
-much cheaper to try first.
+The GTT half was indeed separable and cheaper — no BIOS trip, just a reboot — and it was
+applied on its own 2026-07-29 and measured flat (see the `gtt72` table above). The state
+now running (UMA 32GB + GTT 72 GiB, pool 104 GiB) is the new A-side; **only the UMA
+reduction is still untested.**
 
 # Citations
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
-[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
+[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds); same-day GTT raise applied and verified live — `/etc/default/grub` edit + `update-grub` + fleet reboot, post-reboot `/proc/cmdline`, `pages_limit` 18874368, `mem_info_gtt_total` 77309411328, `total="104.0 GiB"` journal line, and the `gtt72` 7-model benchmark run
 [3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, Ollama bug #16462, the KV-cache f16-vs-q8_0 zero-effect finding and the -3%..0% published-measurement range for the "~10% faster" KV quantisation folklore, and the software-currency figures of a stale llama.cpp build measuring 56% slower and Mesa 25.3+ measuring +19.8% prefill. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here (main benchmark table, single-stream) — different stack, same regime; its separate dedicated KV-cache A/B table for the same model (f16 29.0 vs q8_0 29.0 tok/s, ctx 32K) is a different test run from that 29.5 headline figure. Treat as cross-reference, not as a description of this host.

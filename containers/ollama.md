@@ -33,6 +33,13 @@ documented in [GPU passthrough & Ollama on Vulkan](/playbooks/gpu-passthrough-ol
 Symptoms that send you to that playbook: `library=cpu`, `total_vram="0 B"`, `dropping
 integrated GPU`, or slow inference.
 
+The iGPU memory pool is **104 GiB — 32 GB BIOS UMA + 72 GiB GTT** (`ttm.pages_limit=18874368`
+on the host kernel command line since 2026-07-29; it was 63.2 GiB at the default GTT before
+that). Ollama's `inference compute` journal line reports `total="104.0 GiB"`. The raise is
+capacity, not speed — the full 7-model benchmark after it measured flat. Details and
+verification in the playbook's
+[UMA and GTT section](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
+
 # Storage
 
 Model store is `AIVault/ollama-models` on the [AIVault](/storage/aivault.md) pool,
