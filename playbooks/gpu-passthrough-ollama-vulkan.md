@@ -281,18 +281,20 @@ difference either way.
   switched `OLLAMA_KV_CACHE_TYPE` q8_0 → f16, `daemon-reload` + restart, and verified the
   **live process** (not the file) via `systemctl show ollama -p Environment` both before
   and after — the drop-in directory must stay clean of stray files, a past incident there
-  silently broke env propagation. Ran the harness 3× per model against the
-  `baseline-uma32-gtt31-ctx16k-kvq8` numbers (gemma-4-26B-A4B 24.82 tok/s,
-  Moonlit-Mirage-12B 10.88 tok/s). kv-f16 means: gemma-4-26B-A4B 24.77 tok/s (**-0.20%**),
-  Moonlit-Mirage-12B 11.00 tok/s (**+1.10%**). **Decision rule, fixed in advance:** both
-  models needed to gain more than 3% to keep f16 pinned; neither cleared it (gemma-4-26B-A4B
-  actually regressed slightly), so reverted to q8_0 — confirmed read-back
+  silently broke env propagation. Ran the harness 3x per model against the
+  `baseline-uma32-gtt31-ctx16k-kvq8` numbers (gemma-4-26B-A4B, MoE, 24.82 tok/s;
+  Moonlit-Mirage-12B, dense, 10.88 tok/s). kv-f16 means: gemma-4-26B-A4B (MoE) 24.77 tok/s
+  (**-0.20%**), Moonlit-Mirage-12B (dense) 11.00 tok/s (**+1.10%** — but this sits inside
+  the 12B's own documented 1.2% run-to-run spread in the Baseline table, i.e. within noise
+  per the harness section's comparability warning). **Decision rule, fixed in advance:**
+  both models needed to gain more than 3% to keep f16 pinned; neither cleared it
+  (gemma-4-26B-A4B actually regressed slightly), so reverted to q8_0 — confirmed read-back
   `OLLAMA_KV_CACHE_TYPE=q8_0` and `active` from the live process, drop-in directory clean,
-  backup removed. This contradicts the widely-repeated "~10% faster" claim for KV
-  quantisation on this silicon, and matches a community writeup on the same silicon that
-  found zero speed effect (29.0 vs 29.0 tok/s): q8_0's value here is the halved KV cache
-  memory footprint, not throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service
-  active.
+  backup removed. The same community writeup cited in [3] ran a dedicated KV A/B on this
+  model (f16 29.0 vs q8_0 29.0 at ctx 32K — a separate test from its 29.5 tok/s headline
+  figure) and reports the "~10% faster" folklore as contradicted by every published
+  measurement (-3% to 0%); q8_0's value here is the halved KV cache memory footprint, not
+  throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service active.
 
 # UMA and GTT — the memory pool, and how it's split
 
@@ -389,4 +391,4 @@ much cheaper to try first.
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
 [2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
-[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, and Ollama bug #16462. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here — different stack, same regime. Treat as cross-reference, not as a description of this host.
+[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, Ollama bug #16462, and the KV-cache f16-vs-q8_0 zero-effect finding and the -3%..0% published-measurement range for the "~10% faster" KV quantisation folklore. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here (main benchmark table, single-stream) — different stack, same regime; its separate dedicated KV-cache A/B table for the same model (f16 29.0 vs q8_0 29.0 tok/s, ctx 32K) is a different test run from that 29.5 headline figure. Treat as cross-reference, not as a description of this host.
