@@ -3,7 +3,7 @@ type: Reference
 title: Open Actions
 description: Prioritised list of known issues and follow-ups surfaced during documentation review, not yet actioned.
 tags: [todo, actions, homelab]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-07-29T00:00:00Z
 ---
 
 # Open Actions
@@ -13,6 +13,64 @@ separate from the reference docs so nothing gets lost. Update this when an item 
 or a new one is found — don't let findings just live in [log.md](log.md) history.
 
 ## Resolved
+
+* ~~**AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**~~
+  **Fixed 2026-07-29.** `vm-103-disk-0` (docker-stack's 200G data disk) was thickly
+  provisioned because the AIVault storage is `sparse 0` in `/etc/pve/storage.cfg`, so ZFS
+  held a `refreservation` of 203G against `referenced` of 19.8M — capping the Ollama model
+  store at 164G and making the pool read as nearly full.
+  Resolved with a **fourth option none of the three originally listed here covered**:
+  `zfs set refreservation=none AIVault/vm-103-disk-0`. Pool free space went **164G → 368G**
+  in one command. This beat the two options that would have reclaimed space: (b) shrinking
+  the volume requires `resize2fs` on the ext4 filesystem *inside* a live VM disk **before**
+  `zfs set volsize`, and reversing that order truncates the filesystem; (c) `sparse 1`
+  governs only **future** disk creation and would have done nothing about the 203G already
+  reserved. Clearing the reservation retroactively thin-provisions the existing zvol — no
+  filesystem operation, no VM downtime, reversible in one command
+  (`zfs set refreservation=203G`).
+  Verified with the same three checks used for the original 2026-07-25 migration: Qdrant
+  `200` on 6333 with `/collections` answering, n8n `200` on 5678, Postgres accepting TCP on
+  5432, VM103 still `running`. Trade-off accepted knowingly — the reservation was what
+  guaranteed the VM couldn't be starved; that's now a monitoring concern, tracked as a new
+  P2 item for a Grafana alert. See
+  [AIVault](/storage/aivault.md#the-203g-reservation--found-2026-07-26-released-2026-07-29).
+
+* ~~**Ollama could pin two models in memory indefinitely.**~~ **Bounded 2026-07-29.**
+  Found while executing the local-AI efficiency plan, which had assumed
+  `OLLAMA_MAX_LOADED_MODELS` and `OLLAMA_NUM_PARALLEL` were unset and running at Ollama's
+  defaults. **They were not** — both were explicitly set, and the GPU playbook's record of
+  the override block was stale in three ways: it listed 8 variables where the live process
+  had 11, gave `OLLAMA_CONTEXT_LENGTH=12400` where the live value is `16384`, and omitted
+  `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE` and `OLLAMA_MAX_LOADED_MODELS` entirely.
+  Live values were `NUM_PARALLEL=1` (*tighter* than the plan's proposed 2) and
+  `MAX_LOADED_MODELS=2`. Combined with `KEEP_ALIVE=-1` the latter let two models sit pinned
+  indefinitely — observed live at 8.8 GB + 3.2 GB = 12 GB held with both idle. Set
+  `MAX_LOADED_MODELS=1`; `NUM_PARALLEL` deliberately left at 1 rather than raised, since
+  doubling KV allocation on a bandwidth-bound iGPU works against the goal. Verified against
+  the **live process** (`systemctl show ollama -p Environment`), not the file — the playbook
+  records a past silent failure where an edit never reached the process. Eviction confirmed
+  by loading a second model and seeing the first drop out of `ollama ps`; single-stream
+  throughput unchanged (10.96/10.93 tok/s after, vs 10.94/10.93/10.94 before). Playbook
+  block replaced with the live contents. See
+  [ollama (CT102)](/containers/ollama.md#concurrency-bounds).
+
+* ~~**The bundle's only inference measurement was `~3.2 tok/s`, unqualified.**~~
+  **Replaced 2026-07-29.** No model, quant, context or date was recorded alongside it, and
+  it was load-bearing for the UMA decision. Benchmarked properly and **the old figure turns
+  out to have been wrong by ~3.4×, not merely unqualified** — the real 12B q4 number is
+  ~10.9 tok/s and the 4B is ~23.8 tok/s. Retired from the playbook and replaced with a
+  qualified [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) table (three
+  runs per model, full config, reproduction instructions). Anything previously reasoned
+  from "iGPU inference here is ~3 tok/s" is worth re-examining.
+
+* ~~**The 90.6G Ollama model store had never been inventoried.**~~ **Inventoried
+  2026-07-29.** Only one model was documented anywhere in the bundle, leaving ~80G
+  unexplained and raising the possibility of duplicate or orphaned bulk against the then-164G
+  ceiling. It is fully accounted for: **seven models, ~94 GB nominal / 89.7G on disk, no
+  orphaned blobs, nothing to reclaim.** Full table on
+  [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29). Noted but not acted
+  on: four of the seven (76 GB) are above the 7–14B q4 range the playbook calls the
+  pleasant range on this hardware.
 
 * ~~**SSH from Dave's Mac to the host was broken, blocking all live-state verification.**~~
   **Fixed 2026-07-26.** `ssh root@192.168.0.10` returned `Permission denied
@@ -242,34 +300,38 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   Ethernet (simple, ~116 MB/s), or spend the complexity for roughly 2.5–3× on large media
   copies. Not started — deliberately, since it re-opens a design Dave previously closed.
 
-* **AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**
-  Found 2026-07-26 while checking pool headroom before adding Kokoro. `vm-103-disk-0`
-  (docker-stack's 200G data disk, wired in on 2026-07-25) is **thickly provisioned**
-  because the AIVault storage is `sparse 0` in `/etc/pve/storage.cfg`, so ZFS holds a
-  `refreservation` of 203G against `referenced` of 19.7M. Nothing is broken — the
-  reservation is what guarantees the VM can't be starved — but it permanently caps the
-  Ollama model store at the remaining **164G**, and makes the pool read as nearly full.
-  Decide between: (a) leave it, accepting 164G as the real ceiling; (b) shrink the volume
-  to something closer to actual need (Postgres+Qdrant are using 47M, so 200G is wildly
-  oversized) and reclaim ~150G+; (c) set the storage to `sparse 1` so future disks are
-  thin-provisioned. (b) and (c) both touch a live VM disk, so neither was done
-  unilaterally. See
-  [AIVault](/storage/aivault.md#the-pool-is-62-full-but-nearly-all-of-it-is-a-reservation-found-2026-07-26).
-
-* **The iGPU's BIOS UMA frame buffer is 32GB, above the documented 24GB "sweet spot" —
-  and that's the real explanation for the RAM dispute below, not an error.** Checked while
-  reconciling the RAM figure (2026-07-25): `dmesg | grep -i 'VRAM:'` shows `VRAM: 32768M`,
-  not the "2GB" the GPU playbook previously (and wrongly) said — someone applied a BIOS
-  change at some point without updating the doc. 32GB was already flagged in that same
-  playbook as "defensible but marginal past 24" *before* this was checked. Right now it's
-  costing every other guest 8GB of headroom versus the 24GB target, for no measured
-  inference benefit over 24GB (only a 30B-class model needs the extra 8GB, and the doc
-  says 30B is still "slow" regardless — 7–14B q4 is called the pleasant range). Decide:
-  dial it back to 24GB (reclaims 8GB for the rest of the fleet) or leave at 32GB if
-  there's a reason for the extra headroom not currently documented. **Asked 2026-07-25 —
-  Dave wants to revisit later, no BIOS change yet.** Requires a full host
-  reboot into BIOS — I can't do this remotely, needs Dave at the console. See
+* **The iGPU's BIOS UMA frame buffer is 32GB, above the documented 24GB "sweet spot".**
+  Checked while reconciling the RAM figure (2026-07-25): `dmesg | grep -i 'VRAM:'` shows
+  `VRAM: 32768M`, not the "2GB" the GPU playbook previously (and wrongly) said — someone
+  applied a BIOS change at some point without updating the doc. It costs every other guest
+  8GB of headroom versus the 24GB target.
+  **Correction 2026-07-29:** this item previously justified itself with "for no measured
+  inference benefit over 24GB". **That was never true and has been struck from both this
+  item and the playbook — 24GB has never been run.** The item had been deferred twice on
+  the strength of an assertion no measurement supported.
+  **The blocker is now removed:** a repeatable benchmark exists as of 2026-07-29
+  (`Moonlit-Mirage-12B` at 10.94/10.93/10.94 tok/s, 0.1% spread; `Qwen3.5-4B` at ~23.8
+  tok/s, 2.3% spread — see the playbook's
+  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline)). Those figures **are
+  the A-side**, taken at 32GB. What remains is purely the B-side.
+  **Decision rule fixed in advance** so the outcome is not rationalised after the fact:
+  set UMA to 24GB, confirm `VRAM: 24576M` and `free -h` ~70Gi, re-run the identical
+  benchmark — **if the 12B stays above ~10.4 tok/s (<5% cost), keep 24GB** and bank the
+  8GB; if it costs materially more, close as "measured, keeping 32GB". Either way this
+  closes rather than defers a third time.
+  **Still needs Dave at the console** — BIOS access and a full host reboot with guests shut
+  down cleanly; cannot be done remotely. This is the only remaining step of the
+  2026-07-29 local-AI efficiency work. See
   [GPU passthrough & Ollama on Vulkan](/playbooks/gpu-passthrough-ollama-vulkan.md#the-real-performance-lever-bios-uma-frame-buffer).
+
+* **AIVault has no pool-usage alert, and as of 2026-07-29 nothing structurally guarantees
+  docker-stack's disk can't be starved.** Introduced deliberately by dropping the 203G
+  `refreservation` on `vm-103-disk-0` (see Resolved). The risk is remote — 19.8M of actual
+  use against a 200G volume, on a pool with 368G free — but it is now a monitoring
+  responsibility rather than a ZFS guarantee. [grafana (CT110)](/containers/grafana.md)
+  already scrapes the host via `pve-exporter` and the "N5 Pro Host Overview" dashboard
+  already carries a storage pool usage panel; what's missing is an **alert rule** firing on
+  AIVault above ~85%. Small, and the natural pairing with the reservation change.
 
 ## P3 — open
 
@@ -411,6 +473,11 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   `AIVault/models` (96K each) were leftovers from the original unwired disk plan, now
   superseded by the real bind-mount migration below. Low-priority cleanup, whenever
   convenient: `zfs destroy AIVault/postgres AIVault/models`.
+  **Re-verified 2026-07-29** ahead of the local-AI efficiency work: both are genuinely
+  empty (nothing beyond `.`/`..`), have no snapshots, and are referenced by no guest config
+  in `/etc/pve/lxc/` or `/etc/pve/qemu-server/` — so the destroy is safe whenever wanted.
+  **Dave chose to leave them in place** rather than destroy them; they cost 192K total and
+  are inert. Staying open as a standing note, not a pending task.
 
 * **Two `.old-20260725` backup copies from the Postgres/Qdrant migration are still on
   docker-stack's root disk** (`/data/postgres.old-20260725`, `/data/qdrant.old-20260725`

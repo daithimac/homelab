@@ -1,5 +1,77 @@
 # Directory Update Log
 
+## 2026-07-29 (1)
+* **Executed the local-AI efficiency plan — measure first, then act. Phases 0–2 are done;
+  Phase 3 needs Dave at the BIOS. The headline is that the bundle's single inference
+  measurement was not just unqualified, it was wrong by ~3.4×.**
+  The plan existed because two P2 decisions ([UMA frame buffer](actions.md), [AIVault's
+  203G reservation](actions.md)) had been open since 2026-07-25/26 and neither could be
+  ranked honestly against a bundle containing exactly one inference number — `~3.2 tok/s`,
+  with no model, quant, context or date attached.
+  **Phase 0 — baseline.** Inventoried the model store for the first time: **seven models,
+  ~94 GB nominal / 89.7G on disk**, no orphaned blobs, nothing to reclaim. The plan had
+  suspected ~80G of unexplained bulk; there is none, which retires that concern rather than
+  confirming it. Worth noting for later: four of the seven (76 GB) sit well above the
+  7–14B q4 band the playbook calls "the pleasant range" here, and one 24B is a Q8.
+  Then built a repeatable benchmark — fixed prompt, three runs per model, reading
+  `eval rate` from `--verbose`. It is **very** repeatable: `Moonlit-Mirage-12B` returned
+  10.94 / 10.93 / 10.94 tok/s (0.1% spread), `Qwen3.5-4B` 23.88 / 23.34 / 23.84 (2.3%).
+  **The `~3.2 tok/s` figure reproduces nowhere near** — the real 12B number is ~3.4× higher.
+  That number had been load-bearing for the UMA decision, so it is now retired from the
+  playbook outright rather than merely annotated, and anything previously reasoned from
+  "iGPU inference here is ~3 tok/s" is worth revisiting. One trap recorded for whoever
+  re-runs this: the 4B ignores the word limit and rambles, so its `eval count` swung
+  1810 → 8094 → 2853 tokens between runs — **`eval rate` is stable, wall-clock is not**.
+  **Phase 1 — reclaimed the AIVault reservation.** `zfs set refreservation=none
+  AIVault/vm-103-disk-0` took the pool from **164G to 368G free** in one command. This was
+  a fourth option [actions.md](actions.md) had not listed, and it beat both options that
+  would have reclaimed space: shrinking the volume means `resize2fs` against a live VM
+  disk's ext4 *before* `zfs set volsize`, where reversing the order truncates the
+  filesystem; and `sparse 1` governs only future disk creation, doing nothing about 203G
+  already reserved. Clearing the reservation needs no filesystem operation, no downtime,
+  and reverses in one command. Verified with the same three checks as the original
+  2026-07-25 migration — Qdrant `200` on 6333, n8n `200` on 5678, Postgres accepting TCP on
+  5432, VM103 running — captured both before and after so the comparison meant something.
+  The trade-off was taken knowingly: the reservation was what guaranteed docker-stack's
+  disk couldn't be starved, so that became a monitoring concern and a new P2 item for a
+  Grafana alert rule. (The plan asserted grafana "has no dashboards built yet" — stale; the
+  "N5 Pro Host Overview" dashboard was built 2026-07-25 and already carries a pool usage
+  panel, so only the alert rule is missing.)
+  **Phase 2 — and here the plan's premise turned out to be simply false.** It called for
+  setting `OLLAMA_MAX_LOADED_MODELS` and `OLLAMA_NUM_PARALLEL`, which it said were "not set
+  and run at default". Checking the live process first — per the house rule, and it earned
+  its keep — showed **both were already explicitly set**, and that the playbook's record of
+  the override block was stale in three separate ways: 8 variables documented against 11
+  live, `OLLAMA_CONTEXT_LENGTH=12400` documented against `16384` live, and the three
+  concurrency knobs missing from the doc entirely. Live values were `NUM_PARALLEL=1` —
+  *tighter* than the 2 the plan proposed, so following the plan verbatim would have
+  **loosened** the very thing it set out to bound — and `MAX_LOADED_MODELS=2`. Only the
+  second was worth changing: with `KEEP_ALIVE=-1` it let two models sit pinned
+  indefinitely, observed live at 8.8 GB + 3.2 GB = 12 GB held with both idle. Set to `1`
+  after checking with Dave; `NUM_PARALLEL` deliberately left at 1, since doubling KV
+  allocation on a bandwidth-bound iGPU works against the goal. Verified against the live
+  process rather than the file (the playbook records a past silent failure where an edit
+  never reached the process), and the backup copy was moved out of the `.d` directory so it
+  couldn't become the next such trap. Eviction confirmed empirically — loaded a second
+  model, watched the first drop out of `ollama ps`. Throughput unchanged at 10.96 / 10.93.
+  **Phase 3 — prepared, not executed.** The UMA A/B needs BIOS access and a full host
+  reboot, so it stays with Dave. What changed is that it is now answerable: the Baseline
+  figures **are** the A-side at 32GB, and the playbook and actions.md both carry the exact
+  B-side procedure plus a decision rule fixed in advance — **if the 12B stays above ~10.4
+  tok/s at 24GB (<5% cost), keep 24GB**; otherwise close as "measured, keeping 32GB". Also
+  struck the false claim that justified two prior deferrals: both the playbook and
+  actions.md stated there was "no measured inference benefit over 24GB", when **24GB has
+  never been run at all**.
+  Two things were deliberately not done. The `zfs destroy` of `AIVault/postgres` and
+  `AIVault/models` was verified safe (both empty, no snapshots, no guest references) but
+  Dave chose to leave them; and `NUM_PARALLEL` was left alone as above.
+  Updated [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md)
+  (new Baseline section, live override block, corrected UMA claim, A/B procedure, stale
+  12400/2GB references fixed), [storage/aivault.md](storage/aivault.md),
+  [containers/ollama.md](containers/ollama.md) (model inventory, inference performance,
+  concurrency bounds), and [actions.md](actions.md) (four items resolved, the UMA item
+  corrected and re-scoped, one new P2 for the Grafana alert, the P4 dataset note updated).
+
 ## 2026-07-28 (3)
 * **Reset the AdGuard admin password on [CT109](containers/adguard.md), and corrected two
   wrong assumptions on the way there — one of them Dave's, one that would have been mine.**
