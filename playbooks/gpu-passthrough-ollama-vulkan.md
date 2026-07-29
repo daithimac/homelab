@@ -366,11 +366,14 @@ module. Verify by reading `mem_info_gtt_total` back, never by trusting the confi
 AdGuard (CT109 — the network's only DNS) down with the rest, so any remote or automated
 actor driving the maintenance loses name resolution mid-operation. That is exactly what
 severed the session running the 2026-07-29 change, mid-shutdown-loop. Sequence AdGuard
-last and expect the outage.
+last and expect the outage. On recovery it should come back **first** — it is `onboot=1`,
+so a plain reboot brings it up automatically; when starting guests manually, start CT109
+before anything else to minimise the outage window.
 
 The 72 GiB pool exceeding the host's visible 62Gi is normal — GTT is pageable, not
 reserved — but a load that actually approached the ~104 GiB ceiling would OOM the host,
-and on unified memory a GPU OOM hard-locks the machine. The guards: CT102's cgroup limit
+and on unified memory a GPU OOM hard-locks the machine (reported in [3] for this silicon;
+deliberately not reproduced here). The guards: CT102's cgroup limit
 (`memory: 49152` in `/etc/pve/lxc/102.conf`, confirmed before the reboot) turns a runaway
 load into one dead container instead of a dead host, and nothing in the store comes near
 the ceiling (largest model 25 GB).
@@ -379,21 +382,20 @@ the ceiling (largest model 25 GB).
 it.** Full 7-model run after the raise (label `gtt72`, three runs each, same harness,
 prompt and config as Baseline):
 
-| Model | Baseline t/s | gtt72 t/s | Δ |
-|---|---|---|---|
-| `Qwen3.5-4B-...-Literotica-i1` | 23.54 | 23.43 | −0.5% |
-| `gemma-4-26B-A4B-...` (MoE) | 24.82 | 24.49 | −1.3% |
-| `Melody1437-26B-A4B-v2.0` (MoE) | 19.71 | 19.29 | −2.1% |
-| `Moonlit-Mirage-12B-i1` | 10.88 | 10.81 | −0.6% |
-| `Qwen3.6-27B-Fable-Fusion-711-...` | 4.28 | 4.23 | −1.2% |
-| `Dolphin-Mistral-24B-...` Q8_0 | 3.26 | 3.22 | −1.2% |
-| `MistralRP-Noromaid-...-7B` Q8_0 | 10.43 | 10.32 | −1.1% |
+| Model | Baseline t/s | gtt72 t/s | Δ | Runs |
+|---|---|---|---|---|
+| `Qwen3.5-4B-...-Literotica-i1` | 23.54 | 23.43 | −0.4% | 23.18 / 23.46 / 23.66 (2.0% spread) |
+| `gemma-4-26B-A4B-...` (MoE) | 24.82 | 24.49 | −1.3% | 24.59 / 24.46 / 24.42 (0.7% spread) |
+| `Melody1437-26B-A4B-v2.0` (MoE) | 19.71 | 19.29 | −2.1% | 19.42 / 19.01 / 19.44 (2.2% spread) |
+| `Moonlit-Mirage-12B-i1` | 10.88 | 10.81 | −0.6% | 10.81 / 10.81 / 10.82 (0.1% spread) |
+| `Qwen3.6-27B-Fable-Fusion-711-...` | 4.28 | 4.23 | −1.2% | 4.24 / 4.22 / 4.23 (0.5% spread) |
+| `Dolphin-Mistral-24B-...` Q8_0 | 3.26 | 3.22 | −1.2% | 3.22 / 3.22 / 3.22 (0.0% spread) |
+| `MistralRP-Noromaid-...-7B` Q8_0 | 10.43 | 10.32 | −1.1% | 10.34 / 10.32 / 10.30 (0.4% spread) |
 
 **Decision rule, fixed in advance:** GTT kept regardless (its value is capacity), but a >3%
 drop on any model would have meant something *else* changed in the reboot and demanded
-investigation. **Verdict: flat** — every model within 2.2% of Baseline, inside the
-run-to-run noise band. Final state: `ttm.pages_limit=18874368`, pool 104 GiB, throughput
-unchanged.
+investigation. Every model came in within 2.1% of Baseline, inside the run-to-run noise
+band. Final state: `ttm.pages_limit=18874368`, pool 104 GiB, throughput unchanged.
 
 The counterweight: UMA measures roughly **+11% faster than GTT** for the same capacity, so
 the *remaining* decision is the UMA half — whether to hand 16–24GB back to the fleet. That,
@@ -426,18 +428,20 @@ The better test:
 
 * **A-side** — UMA 32GB, GTT 31.2 GiB (default), pool 63.2 GiB. Baseline figures above.
   (Live state until 2026-07-29.)
-* **B-side** — UMA **16GB** in BIOS, plus `ttm.pages_limit=18874368` on the kernel command
-  line. Returns **16GB permanently to the fleet** (host should show ~78Gi, not 62Gi) while
-  *growing* the addressable pool.
+* **B-side** — UMA **16GB** in BIOS. That is the only change left to make: GTT is already
+  72 GiB on both sides since 2026-07-29, so the B-side needs no kernel-command-line work.
+  Returns **16GB permanently to the fleet** (host should show ~78Gi, not 62Gi) while the
+  pool stays large (16 + 72 ≈ 88 GiB).
 
 Verify both halves before benchmarking — `dmesg | grep -i 'VRAM:'` for UMA,
-`cat /sys/class/drm/card1/device/mem_info_gtt_total` for GTT, and Ollama's `total=` line
-for the sum. Then re-run the exact Baseline prompt and models.
+`cat /sys/class/drm/card1/device/mem_info_gtt_total` for GTT (should still read 72 GiB),
+and Ollama's `total=` line for the sum. Then re-run the exact Baseline prompt and models.
 
 Decision rule, fixed in advance: **if the MoE (`gemma-4-26B-A4B`, the model actually worth
-running) stays within ~10% of 24.82 tok/s, take the B-side** — 16GB back to the fleet is
-worth a modest throughput cost. If it drops materially more than that, UMA is doing real
-work and 32GB stands.
+running) stays within ~10% of 24.49 tok/s — i.e. above ~22.0 — take the B-side** (the
+comparison base is the new A-side's `gtt72` figure, not the pre-GTT Baseline). 16GB back to
+the fleet is worth a modest throughput cost. If it drops materially more than that, UMA is
+doing real work and 32GB stands.
 
 The GTT half was indeed separable and cheaper — no BIOS trip, just a reboot — and it was
 applied on its own 2026-07-29 and measured flat (see the `gtt72` table above). The state
@@ -447,5 +451,5 @@ reduction is still untested.**
 # Citations
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
-[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds); same-day GTT raise applied and verified live — `/etc/default/grub` edit + `update-grub` + fleet reboot, post-reboot `/proc/cmdline`, `pages_limit` 18874368, `mem_info_gtt_total` 77309411328, `total="104.0 GiB"` journal line, and the `gtt72` 7-model benchmark run
+[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds); same-day GTT raise applied and verified live — `/etc/default/grub` edit + `update-grub` + fleet reboot, post-reboot `/proc/cmdline`, `pages_limit` 18874368, `mem_info_gtt_total` 77309411328, `total="104.0 GiB"` journal line, the CT102 cgroup limit (`memory: 49152`) confirmed in `/etc/pve/lxc/102.conf` before the reboot, the mid-shutdown LAN DNS outage (AdGuard down with the fleet, severing the driving session), and the `gtt72` 7-model benchmark run
 [3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, Ollama bug #16462, the KV-cache f16-vs-q8_0 zero-effect finding and the -3%..0% published-measurement range for the "~10% faster" KV quantisation folklore, and the software-currency figures of a stale llama.cpp build measuring 56% slower and Mesa 25.3+ measuring +19.8% prefill. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here (main benchmark table, single-stream) — different stack, same regime; its separate dedicated KV-cache A/B table for the same model (f16 29.0 vs q8_0 29.0 tok/s, ctx 32K) is a different test run from that 29.5 headline figure. Treat as cross-reference, not as a description of this host.
