@@ -260,6 +260,19 @@ difference either way.
   either way; that interface is laptop firmware, not present on the N5 Pro under Proxmox.
   Community guidance ranking governor/power-profile as the top lever for this CPU was
   written against a machine that exposed it; here it is already done.
+* **GPU `power_dpm_force_performance_level` (auto vs high) tested 2026-07-29 — reverted,
+  not a lever.** Forced `card1` (Radeon 890M) from `auto` to `high` at runtime
+  (`/sys/class/drm/card1/device/power_dpm_force_performance_level`, verified read-back both
+  ways, no reboot needed) and ran the harness 3x per model against the
+  `baseline-uma32-gtt31-ctx16k-kvq8` numbers measured earlier the same day. gemma-4-26B
+  (MoE): baseline 24.82 tok/s vs dpm-high mean 24.96 tok/s (+0.56%). Moonlit-Mirage-12B
+  (dense): baseline 10.88 tok/s vs dpm-high mean 10.98 tok/s (+0.92%). Decision rule was
+  both models >3% gain to keep `high` pinned; neither cleared it, so reverted to `auto`
+  (confirmed read-back `auto`) — a permanently forced clock isn't worth the idle-power cost
+  for a ~1% swing. The sub-1% deltas on both a MoE and a dense model corroborate the
+  bandwidth-bound diagnosis from the earlier UMA/GTT work: this iGPU is starved on memory
+  bandwidth, not compute, so GPU core clock/power-state tuning is not worth pursuing further
+  here.
 
 # UMA and GTT — the memory pool, and how it's split
 
