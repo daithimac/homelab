@@ -8,11 +8,15 @@ timestamp: 2026-07-29T00:00:00Z
 ---
 
 512GB WD NVMe (472G usable). Mountpoint `/AIVault`. Registered as Proxmox ZFS storage (disk
-images + container rootfs). **89.8G used / 368G free as of 2026-07-29**, after the
-`refreservation` on `vm-103-disk-0` was dropped — see below. Between 2026-07-26 and that
-change it read 294G used / 164G free, of which 203G was reservation rather than data.
+images + container rootfs). **79.8G used / 378G free as of 2026-07-30**, after the
+overnight model swap (24B pulled at Q4_K_M, its Q8_0 removed — see
+[the ollama page](/containers/ollama.md)). On 2026-07-29 it read 89.8G used / 368G free,
+after the `refreservation` on `vm-103-disk-0` was dropped — see below. Between 2026-07-26
+and that change it read 294G used / 164G free, of which 203G was reservation rather than
+data.
 
-The Ollama model store at `AIVault/ollama-models` (89.7G, the pool's only real consumer),
+The Ollama model store at `AIVault/ollama-models` (79.8G as of 2026-07-30, was 89.7G
+before the Q4/Q8 swap; the pool's only real consumer),
 bind-mounted into [ollama (CT102)](/containers/ollama.md) at `/mnt/models`
 (`OLLAMA_MODELS=/mnt/models`), is confirmed live. Its contents were inventoried for the
 first time on 2026-07-29 — seven models, all genuinely in use, no orphaned bulk; the

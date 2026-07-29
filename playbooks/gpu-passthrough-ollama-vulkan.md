@@ -3,7 +3,7 @@ type: Playbook
 title: GPU passthrough & Ollama on Vulkan (CT102)
 description: The full iGPU → Ollama-on-Vulkan chain for CT102 — device passthrough, idmap, Mesa backports, and the IGPU_ENABLE flag.
 tags: [gpu, ollama, vulkan, lxc, proxmox]
-timestamp: 2026-07-29T00:00:00Z
+timestamp: 2026-07-30T00:00:00Z
 ---
 
 The Radeon 890M (RDNA 3.5, `gfx1150`, reported as `GFX1150`/`0x150e`) on

@@ -6,7 +6,9 @@
   everything measured, only what helped kept. Two levers rejected on their numbers, two
   closed as already-optimal or not-actionable, one capacity raise applied, one model
   swapped on Dave's call — and one self-inflicted outage: the reboot's shutdown loop took
-  down LAN DNS and severed the session driving it. Only the UMA BIOS trip remains open.**
+  down LAN DNS and severed the session driving it. Of the optimisation plan itself, only
+  the UMA BIOS trip remains open (the AIVault pool-alert P2 — a Phase-1 follow-up, not an
+  optimisation lever — also still stands).**
   The plan: the community writeup cited as [3] in the playbook benchmarks the same silicon
   (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150) on a different stack (Unraid + llama.cpp),
   so its levers are hypotheses here, not conclusions. Each one got an A/B with the
@@ -61,8 +63,11 @@
   dangling. The levers that don't transfer are also recorded so nobody re-litigates them:
   llama.cpp's `-b`/`-ub` sweep and MTP speculative decoding (Ollama exposes neither),
   llama-swap stack specifics, and ROCm (Vulkan is already the right backend here).
-  **What remains — exactly one thing:** the UMA half of the A/B, dropping the BIOS frame
-  buffer 32 → 16GB, which needs Dave physically at the console. The comparison base is the
+  **What remains from the optimisation plan — the sole remaining item:** the UMA half of
+  the A/B, dropping the BIOS frame
+  buffer 32 → 16GB, which needs Dave physically at the console. (Separately, the AIVault
+  pool-usage alert P2 opened in Phase 1 also remains open in [actions.md](actions.md) —
+  a monitoring follow-up, not an optimisation lever.) The comparison base is the
   `gtt72` run and the rule is fixed: gemma-4-26B-A4B stays above ~22.0 tok/s (within ~10%
   of 24.49) → keep 16GB. Updated
   [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md)

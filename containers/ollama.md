@@ -3,7 +3,7 @@ type: LXC Container
 title: ollama (CT102)
 description: Ollama LLM inference on Vulkan/iGPU, at 192.168.0.13.
 tags: [proxmox, lxc, ollama, gpu, ai]
-timestamp: 2026-07-29T00:00:00Z
+timestamp: 2026-07-30T00:00:00Z
 ---
 
 CT102, hostname `ollama`, **192.168.0.13**. Runs Ollama for LLM inference against the
