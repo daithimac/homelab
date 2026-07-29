@@ -48,8 +48,9 @@ bind-mounted into this container at `/mnt/models` (`OLLAMA_MODELS=/mnt/models`).
 ## Model inventory (2026-07-29)
 
 First actual inventory of the store — previously only one model was documented anywhere in
-the bundle, leaving ~80G unexplained. It is **not** unexplained: seven models, ~94 GB
-nominal (89.7G on disk), no orphaned blobs, nothing to reclaim.
+the bundle, leaving ~80G unexplained. It is **not** unexplained: eight models, ~108 GB
+nominal, no orphaned blobs, nothing to reclaim. (The eighth — the 24B at Q4_K_M — was
+pulled 2026-07-29 specifically for the Q4-vs-Q8 A/B below.)
 
 Sorted by measured speed, not size — because on this hardware the two are only loosely
 related (see below).
@@ -62,6 +63,7 @@ related (see below).
 | `mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest` | dense | 7.5 GB | 10.88 | Usable |
 | `Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF:Q8_0` | dense | 7.7 GB | 10.43 | Usable |
 | `DavidAU/Qwen3.6-27B-Fable-Fusion-711-...-MTP-GGUF:latest` | dense | 18 GB | **4.28** | Slow for its size |
+| `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q4_K_M` | dense | 14 GB | **5.63** | Pulled 2026-07-29 for A/B vs the Q8 below — owner decision pending on which to keep |
 | `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q8_0` | dense | 25 GB | **3.26** | Slowest; Q8 |
 
 **The headline: the fastest model in the store is also one of the largest.** The 16 GB
@@ -74,11 +76,22 @@ means 26B total, 4B active, and it will run like a 4B. Full reasoning and the pr
 rule for dense models are in the playbook's
 [bytes-per-token section](/playbooks/gpu-passthrough-ollama-vulkan.md#bytes-read-per-token-is-the-lever--which-means-moe-not-size).
 
-Two things worth acting on, both tracked in [actions.md](/actions.md): the 24B is a **Q8
-where a Q4_K_M would run roughly twice as fast** for little quality loss at that size, and
-the two slow dense models (27B, 24B) are doing nothing the MoEs don't do faster. Storage is
-no longer a reason to prune — AIVault is no longer capped at 164G (see
-[AIVault](/storage/aivault.md)) — but speed is.
+One thing acted on, tracked in [actions.md](/actions.md): the 24B was available only as
+**Q8**, and the dense rule (`~80 ÷ size-in-GB`) predicted a Q4_K_M at ~13-14 GB would land
+around **5.7-6.2 tok/s** — call it "roughly twice as fast" against the Q8's 3.22 tok/s (the
+current post-`gtt72` figure for that model; see the playbook's
+[gtt72 table](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split)).
+**Measured: 5.63 tok/s**
+(3 runs, pulled and benched 2026-07-29, 14 GB on disk) — a **1.75×** speedup over the Q8,
+just under the predicted band's low end, and 14 GB × 5.63 = **79**, in line with the
+rule's ~80 constant. The dense rule's track record holds up here to within a few percent.
+Both Q4_K_M and Q8_0 are kept side by side for now — **the keep/drop decision is the
+owner's**, weighing that ~1.75× speed against whatever quality loss the Q4 quantization
+costs at this size.
+
+The other item, still open: the two slow dense models (27B, 24B) are doing nothing the
+MoEs don't do faster. Storage is no longer a reason to prune — AIVault is no longer capped
+at 164G (see [AIVault](/storage/aivault.md)) — but speed is.
 
 # Inference performance
 
