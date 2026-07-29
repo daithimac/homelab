@@ -1,5 +1,29 @@
 # Directory Update Log
 
+## 2026-07-29 (9)
+* **Resolved `cl-helper plugin not detected` UI status issue in Character Library.**
+  Root cause: `apiRequest` in `app/library.js` automatically prepends `/api`. Passing `/api/plugins/cl-helper/health` to `apiRequest` produced `/api/api/plugins/cl-helper/health` (404 Not Found), causing `checkClHelperPlugin` health checks to fail. Restored `/plugins/cl-helper` endpoint paths for all `apiRequest` invocations across extension modules and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (8)
+* **Stripped `accept-encoding` in SillyTavern's `corsProxyMiddleware`.**
+  Fixed backend issue in `/opt/sillytavern/app/src/middleware/corsProxy.js` where forwarded `accept-encoding` request headers caused target servers (like CharacterTavern) to return gzipped bodies while `node-fetch` uncompressed the stream, producing garbled gzip binary bytes in client responses. Added `accept-encoding` to `headersToRemove` and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (7)
+* **Pre-populated `_proxyOrigins` set in Character Library `provider-utils.js`.**
+  Fixed issue where direct browser fetch attempts to `character-tavern.com` returned raw gzipped binary bytes (`\x1f\x8b\x08...`) instead of routing through SillyTavern's `/proxy/`. Pre-loaded third-party provider domains into `_proxyOrigins` so API calls immediately use SillyTavern's CORS proxy. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (6)
+* **Resolved CharacterTavern JSON.parse unexpected character error in Character Library.**
+  Fixed root cause where `CL_HELPER_PLUGIN_BASE` was pointing to `/plugins/cl-helper` instead of `/api/plugins/cl-helper`. Requests to `/plugins/cl-helper/health` returned 404 HTML (`<!DOCTYPE html>...`), which failed JSON parsing. Updated base URLs across extension modules, added `safeJson` error handling, and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (5)
+* **Installed cl-helper server plugin for Character Library into CT120 via SSH.**
+  Copied `extras/cl-helper` to `/opt/sillytavern/app/plugins/cl-helper`, set ownership to `sillytavern:sillytavern`, verified `enableServerPlugins: true` in `config.yaml`, and restarted `sillytavern.service`. Log output confirmed `[cl-helper] Character Library helper plugin loaded`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (4)
+* **Installed SillyTavern-CharacterLibrary extension into CT120 via SSH.**
+  Cloned [SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary) to `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary`, updated directory permissions (`chown -R sillytavern:sillytavern`), and restarted `sillytavern.service`. Verified container status `active (running)`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
 ## 2026-07-29 (3)
 * **Documented resolution for SillyTavern CORS proxy error when searching external character hubs.**
   Character searches from hubs like CharacterTavern, PygmalionAI, and WyvernAI fail with `"Search failed: CORS proxy is disabled. Set enableCorsProxy: true in SillyTavern's config.yaml and restart the server"`. The Node.js backend proxy must be enabled to proxy requests around browser CORS restrictions. Setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and executing `systemctl restart sillytavern.service` resolves the failure. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).

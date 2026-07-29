@@ -14,6 +14,15 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 ## Resolved
 
+* ~~**CharacterTavern search failed & `cl-helper` plugin not detected error.**~~
+  **Fixed 2026-07-29.** Root cause: `apiRequest` in Character Library prepends `/api` automatically; passing `/api/plugins/cl-helper/health` to `apiRequest` produced a double-prefix `/api/api/plugins/cl-helper/health` (404 Not Found), causing the UI to report `cl-helper plugin not detected`. Restored `/plugins/cl-helper` endpoint paths for `apiRequest` calls, stripped `accept-encoding` in `corsProxy.js`, and restarted `sillytavern.service`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions--server-plugins).
+
+* ~~**Installed cl-helper server plugin for Character Library in CT120.**~~
+  **Completed 2026-07-29.** Installed `cl-helper` plugin to `/opt/sillytavern/app/plugins/cl-helper` from `SillyTavern-CharacterLibrary/extras/cl-helper`. Verified `enableServerPlugins: true` in `config.yaml`, set ownership to `sillytavern:sillytavern`, and restarted `sillytavern.service`. Log output confirmed `[cl-helper] Character Library helper plugin loaded`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions--server-plugins).
+
+* ~~**Installed SillyTavern-CharacterLibrary extension in CT120.**~~
+  **Completed 2026-07-29.** Cloned [SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary) into `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary` via SSH / `pct exec 120`, set ownership to `sillytavern:sillytavern`, and restarted `sillytavern.service`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions).
+
 * ~~**SillyTavern character search (CharacterTavern, PygmalionAI, WyvernAI) fails with CORS proxy error.**~~
   **Fixed / Documented 2026-07-29.** External character hub searches require SillyTavern's built-in CORS proxy to bypass browser cross-origin restrictions. `enableCorsProxy` defaults to `false` in `config.yaml`. Resolved by setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and restarting `sillytavern.service` (`pct exec 120 -- systemctl restart sillytavern.service`). Documented on [sillytavern (CT120)](/containers/sillytavern.md#character-hub--cors-proxy-configuration).
 

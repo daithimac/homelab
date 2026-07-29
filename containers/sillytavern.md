@@ -59,6 +59,13 @@ If searching character hubs fails with the error message:
    pct exec 120 -- systemctl restart sillytavern.service
    ```
 
+# Installed Extensions & Server Plugins
+
+Third-party frontend extensions live in `/opt/sillytavern/app/public/scripts/extensions/third-party/` and server plugins live in `/opt/sillytavern/app/plugins/` (with `enableServerPlugins: true` in `config.yaml`), owned by `sillytavern:sillytavern`:
+
+* **[SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary)** (Installed 2026-07-29) — Cloned to `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary`. Provides an in-app character browser and manager.
+* **cl-helper Server Plugin** (Installed 2026-07-29) — Copied from `SillyTavern-CharacterLibrary/extras/cl-helper` to `/opt/sillytavern/app/plugins/cl-helper`. Enables session proxying, authentication flows, and disk-cached avatar/gallery thumbnails. (Fixed double-prefix `/api/api/plugins/cl-helper` health check pathing, pre-populated `_proxyOrigins`, and stripped `accept-encoding` from `corsProxy.js`).
+
 # Why CT120, not CT111
 
 The ID jumps from CT109/CT110 straight to CT120, unlike every other guest's sequential
