@@ -295,6 +295,23 @@ difference either way.
   figure) and reports the "~10% faster" folklore as contradicted by every published
   measurement (-3% to 0%); q8_0's value here is the halved KV cache memory footprint, not
   throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service active.
+* **Software-currency check (Ollama + Mesa) 2026-07-29 — neither upgraded, both within
+  acceptable margin.** Installed Ollama **0.31.1**, latest GitHub release **v0.32.5**
+  (`api.github.com/repos/ollama/ollama/releases/latest`) — one minor version ahead, which
+  is inside the "couple of minor versions" no-upgrade threshold set in advance, so the
+  installer was not run and no snapshot was taken. Mesa: installed
+  **25.0.7-2~bpo12+1**, `apt-cache policy mesa-vulkan-drivers` candidate is the **same**
+  version — nothing ≥25.3 is available in bookworm-backports, so Mesa 25.3+ is not
+  currently reachable on this host without pulling from trixie/testing, which is out of
+  scope given the glibc/libdrm risk to the working Vulkan chain. Citation [3] measured a
+  stale llama.cpp build at 56% slower and Mesa 25.3+ at +19.8% prefill on the same
+  silicon (Unraid/llama.cpp stack, not this host) — neither figure was reproduced here
+  since neither upgrade path was actionable; recorded as a cross-reference only.
+  **Decision rule, fixed in advance:** upgrade only if the release is materially ahead
+  (multiple minors or a major) or a genuinely newer backports Mesa exists — neither held,
+  so this was a no-op by design, not a skipped check. No benchmarking run (nothing was
+  upgraded), no snapshot exists post-check (`pct listsnapshot 102` shows only `current`).
+  Final state: Ollama 0.31.1, Mesa 25.0.7-2~bpo12+1, both unchanged.
 
 # UMA and GTT — the memory pool, and how it's split
 
@@ -391,4 +408,4 @@ much cheaper to try first.
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
 [2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
-[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, Ollama bug #16462, and the KV-cache f16-vs-q8_0 zero-effect finding and the -3%..0% published-measurement range for the "~10% faster" KV quantisation folklore. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here (main benchmark table, single-stream) — different stack, same regime; its separate dedicated KV-cache A/B table for the same model (f16 29.0 vs q8_0 29.0 tok/s, ctx 32K) is a different test run from that 29.5 headline figure. Treat as cross-reference, not as a description of this host.
+[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, Ollama bug #16462, the KV-cache f16-vs-q8_0 zero-effect finding and the -3%..0% published-measurement range for the "~10% faster" KV quantisation folklore, and the software-currency figures of a stale llama.cpp build measuring 56% slower and Mesa 25.3+ measuring +19.8% prefill. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here (main benchmark table, single-stream) — different stack, same regime; its separate dedicated KV-cache A/B table for the same model (f16 29.0 vs q8_0 29.0 tok/s, ctx 32K) is a different test run from that 29.5 headline figure. Treat as cross-reference, not as a description of this host.
