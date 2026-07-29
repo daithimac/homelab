@@ -1,5 +1,77 @@
 # Directory Update Log
 
+## 2026-07-30 (1)
+* **Executed the iGPU optimisation plan overnight (evening of 2026-07-29 into the early
+  hours) — every transferable lever from the Strix Point writeup tested against this host,
+  everything measured, only what helped kept. Two levers rejected on their numbers, two
+  closed as already-optimal or not-actionable, one capacity raise applied, one model
+  swapped on Dave's call — and one self-inflicted outage: the reboot's shutdown loop took
+  down LAN DNS and severed the session driving it. Only the UMA BIOS trip remains open.**
+  The plan: the community writeup cited as [3] in the playbook benchmarks the same silicon
+  (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150) on a different stack (Unraid + llama.cpp),
+  so its levers are hypotheses here, not conclusions. Each one got an A/B with the
+  **decision rule fixed before the measurement**, every figure was read from the live
+  process or live sysfs rather than config files, and every run is preserved by label in
+  `/root/bench-results.csv` on the host. The harness came first: `/root/bench-ollama.sh`
+  (fixed prompt, three runs per model, `eval rate` from `--verbose`), hardened after
+  review with a 30-minute timeout writing a `TIMEOUT` sentinel, pre-flight checks and
+  argument validation.
+  **Closed without a change — CPU governor.** The writeup's top lever is moot here: all 24
+  threads already run `performance`/EPP-performance under `amd-pstate-epp`, and this board
+  exposes no ACPI platform-profile at all. Already optimal, recorded as such.
+  **The baseline got real.** Full three-run baseline across all seven models (label
+  `baseline-uma32-gtt31-ctx16k-kvq8`), spreads ≤2.9%: gemma-4-26B-A4B (MoE) 24.82,
+  Qwen3.5-4B 23.54, Melody1437-26B-A4B (MoE) 19.71, Moonlit-Mirage-12B 10.88,
+  MistralRP-7B 10.43 — its first-ever measurement, and 7.7 GB × 10.43 ≈ 80 lands the
+  dense 80÷GB rule again — Qwen3.6-27B 4.28, Dolphin-24B Q8 3.26.
+  **Rejected — GPU dpm level.** Forcing `power_dpm_force_performance_level` to `high`
+  measured **+0.56%** (gemma MoE) and **+0.92%** (12B dense) against a both->3% rule.
+  Reverted to `auto`, read-back confirmed. The sub-1% deltas on both model classes
+  corroborate the bandwidth-bound diagnosis: clock pinning buys nothing here.
+  **Rejected — KV cache f16.** Against q8_0: **−0.20%** (gemma, a slight regression) and
+  **+1.10%** (12B — inside its own 1.2% run-to-run spread, i.e. noise). The "f16 is ~10%
+  faster" folklore is contradicted here exactly as it was in [3]'s own A/B; q8_0 stays,
+  valued as the pure memory lever it is. Reverted with the live process verified both
+  directions.
+  **No-op by rule — software currency.** Ollama 0.31.1 vs latest v0.32.5 is one minor
+  version behind a ≥2-minors threshold: skip. Mesa 25.0.7 is the newest
+  bookworm-backports offers, with nothing ≥25.3 available: skip, revisit condition
+  documented (backports shipping ≥25.3, or a CT102 rebuild on trixie). [3]'s +19.8%
+  prefill from Mesa 25.3+ does not justify pulling toolchain libraries across a Debian
+  release boundary into a working Vulkan chain.
+  **Kept — GTT raised 31.2 → 72 GiB** (`ttm.pages_limit=18874368
+  ttm.page_pool_size=18874368` via GRUB, backup at `/root/grub.bak-20260729`), taking the
+  iGPU's addressable pool from 63.2 to **104 GiB** (`total="104.0 GiB"` in Ollama's own
+  journal). This needed a full-fleet reboot, and the first attempt caused the session's
+  one genuine incident: **the guest-shutdown loop took down AdGuard (CT109) — the LAN's
+  only DNS — and severed the driving session mid-task**, because shutting everything down
+  includes shutting down name resolution for whatever is orchestrating the shutdown. The
+  reboot completed on a second attempt with an IP-only watcher. The lesson is now written
+  down twice: in the playbook's UMA/GTT section and as a standing bullet in
+  [troubleshooting-gotchas](playbooks/troubleshooting-gotchas.md) — sequence AdGuard last
+  down / first up, and expect the outage. Post-reboot, the full 7-model `gtt72` benchmark
+  came back flat (worst −2.1%, on Melody, inside its own 2.2% spread) — GTT kept per the
+  pre-fixed rule, since its value is capacity, not speed; a >3% drop anywhere would have
+  flagged the reboot itself.
+  **Model mix — Dave's calls, executed.** Dolphin-24B pulled at Q4_K_M (14 GB) and
+  measured against the Q8 on identical post-`gtt72` config: **5.63 vs 3.22 tok/s, 1.75×**
+  (predicted ~2× from the byte ratio; dense-rule product 79). Dave chose to keep the Q4
+  and remove the Q8 — done, model store **103G → 79.8G** — and explicitly chose *not* to
+  prune the slow dense families, which is recorded as a decision rather than left
+  dangling. The levers that don't transfer are also recorded so nobody re-litigates them:
+  llama.cpp's `-b`/`-ub` sweep and MTP speculative decoding (Ollama exposes neither),
+  llama-swap stack specifics, and ROCm (Vulkan is already the right backend here).
+  **What remains — exactly one thing:** the UMA half of the A/B, dropping the BIOS frame
+  buffer 32 → 16GB, which needs Dave physically at the console. The comparison base is the
+  `gtt72` run and the rule is fixed: gemma-4-26B-A4B stays above ~22.0 tok/s (within ~10%
+  of 24.49) → keep 16GB. Updated
+  [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md)
+  (tuning notes, UMA/GTT section, the A/B), [containers/ollama.md](containers/ollama.md)
+  (pool line, inventory with the Q4/Q8 swap),
+  [playbooks/troubleshooting-gotchas.md](playbooks/troubleshooting-gotchas.md) (DNS
+  gotcha), and [actions.md](actions.md) (GTT and model-mix P2s closed to Resolved, UMA
+  item re-scoped as the sole remaining plan item, AIVault-alert wording refreshed).
+
 ## 2026-07-29 (9)
 * **Resolved `cl-helper plugin not detected` UI status issue in Character Library.**
   Root cause: `apiRequest` in `app/library.js` automatically prepends `/api`. Passing `/api/plugins/cl-helper/health` to `apiRequest` produced `/api/api/plugins/cl-helper/health` (404 Not Found), causing `checkClHelperPlugin` health checks to fail. Restored `/plugins/cl-helper` endpoint paths for all `apiRequest` invocations across extension modules and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).

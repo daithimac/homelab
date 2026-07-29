@@ -3,7 +3,7 @@ type: Reference
 title: Open Actions
 description: Prioritised list of known issues and follow-ups surfaced during documentation review, not yet actioned.
 tags: [todo, actions, homelab]
-timestamp: 2026-07-29T00:00:00Z
+timestamp: 2026-07-30T00:00:00Z
 ---
 
 # Open Actions
@@ -25,6 +25,37 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 * ~~**SillyTavern character search (CharacterTavern, PygmalionAI, WyvernAI) fails with CORS proxy error.**~~
   **Fixed / Documented 2026-07-29.** External character hub searches require SillyTavern's built-in CORS proxy to bypass browser cross-origin restrictions. `enableCorsProxy` defaults to `false` in `config.yaml`. Resolved by setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and restarting `sillytavern.service` (`pct exec 120 -- systemctl restart sillytavern.service`). Documented on [sillytavern (CT120)](/containers/sillytavern.md#character-hub--cors-proxy-configuration).
+
+* ~~**`ttm.pages_limit` has never been set on this host, and GTT is sitting at the kernel
+  default of 31.2 GiB.**~~ **Fixed 2026-07-29**, the same evening it went in as a P2. Set
+  `ttm.pages_limit=18874368 ttm.page_pool_size=18874368` (72 GiB) in
+  `GRUB_CMDLINE_LINUX_DEFAULT`, `update-grub`, full-fleet reboot ~22:48 (pre-change backup
+  at `/root/grub.bak-20260729`). Verified the way the item itself demanded — read back, not
+  trusted: `/proc/cmdline` carries the parameters,
+  `/sys/module/ttm/parameters/pages_limit` = 18874368, `mem_info_gtt_total` = 77309411328
+  (72 GiB), and Ollama's journal now reports `total="104.0 GiB"` — the iGPU's addressable
+  pool went **63.2 → 104 GiB**. The post-reboot 7-model benchmark (label `gtt72`) came back
+  flat — worst −2.1%, inside run-to-run noise — so the raise is pure capacity, kept per the
+  rule fixed in advance (a >3% drop on any model would have meant something *else* changed
+  in the reboot). **One incident:** the guest-shutdown loop for the first reboot attempt
+  took down AdGuard (CT109) — the LAN's only DNS — and severed the session driving the
+  change mid-task; the reboot completed on a second attempt with an IP-only watcher. The
+  hazard is now documented in the playbook and as a standing bullet in
+  [troubleshooting-gotchas](/playbooks/troubleshooting-gotchas.md) (sequence AdGuard last
+  down / first up). See
+  [UMA and GTT](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
+
+* ~~**Two of the seven models are slow dense models that the MoEs already beat, and the 24B
+  is a `Q8_0` costing ~2× throughput.**~~ **Decided and executed 2026-07-30** (early hours,
+  same session as the GTT raise). Option (a) taken and measured rather than predicted:
+  `Dolphin-Mistral-24B` pulled at `Q4_K_M` (14 GB) and benchmarked against the Q8 on
+  identical post-`gtt72` config — **5.63 vs 3.22 tok/s, 1.75×** (the item predicted ~2×
+  from the byte ratio; the dense 80÷GB rule holds, product 79). Dave chose to **keep the
+  Q4 and remove the Q8** — executed, model store **103G → 79.8G**. Option (b) — dropping
+  or demoting the two slow dense families — was put to Dave alongside the same table and
+  he **explicitly chose to keep everything else**: a recorded decision, not a deferral.
+  Inventory updated on
+  [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29).
 
 * ~~**AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**~~
   **Fixed 2026-07-29.** `vm-103-disk-0` (docker-stack's 200G data disk) was thickly
@@ -337,55 +368,28 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   that model class is not worth designing around here (the 18GB dense 27B runs at 4.28
   tok/s; the 16GB MoE that *is* worth running fits comfortably either way). Second, UMA is
   only half the memory story: the iGPU also draws on **GTT**, which is *borrowed* rather
-  than permanently stolen, and which has never been tuned on this host (see the new GTT
-  item below).
-  **The A/B now worth running** is UMA **16GB** + raised `ttm.pages_limit`, against the
-  current 32GB + default GTT. That returns **16GB permanently to the fleet** rather than
-  8GB, while *growing* the addressable pool. Decision rule fixed in advance: **if
-  `gemma-4-26B-A4B` — the model actually worth running — stays within ~10% of 24.77 tok/s,
-  take the 16GB side.** The counterweight to price in: UMA measures roughly **+11% faster
-  than GTT** for equivalent capacity, so expect to pay something.
-  **The GTT half needs only a reboot, not BIOS access**, so it is separable and much
-  cheaper to try first — and it is *not* blocked on Dave being at the console. Only the UMA
-  half is. See
-  [UMA and GTT](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
-
-* **`ttm.pages_limit` has never been set on this host, and GTT is sitting at the kernel
-  default of 31.2 GiB.** Found 2026-07-29. `/proc/cmdline` carries no `ttm.*` parameters at
-  all, so the iGPU's borrowable system-RAM pool is whatever the kernel picked. The iGPU
-  addresses **32 GB UMA + 31.2 GiB GTT = 63.2 GiB** (matches Ollama's own `total=` line).
-  This is the counterpart to the UMA item below and the cheaper half of it: GTT is
-  **borrowed and returned**, where UMA is **permanently stolen** from the OS — which is why
-  the standing guidance for this exact chip is *small UMA, large GTT*, the opposite of how
-  this host is configured. Raising it is a kernel command-line change:
-  `ttm.pages_limit=18874368 ttm.page_pool_size=18874368` (72GB; pages × 4KiB). **Needs a
-  reboot but not BIOS access**, so unlike the UMA question it does not need Dave at the
-  console. Verify by reading `/sys/class/drm/card1/device/mem_info_gtt_total` back, not by
-  trusting the config. Note `amdgpu.gttsize` is deprecated on current kernels and
-  `amdttm.pages_limit` is for the out-of-tree DKMS module — neither will work.
-
-* **Two of the seven models are slow dense models that the MoEs already beat, and the 24B
-  is a `Q8_0` costing ~2× throughput.** Found 2026-07-29 while benchmarking. The full
-  measured table is on [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29);
-  the short version is that **the fastest model in the store is also one of the largest**:
-  `gemma-4-26B-A4B` (16 GB, MoE, ~4B active) runs at **24.77 tok/s**, against **4.28** for
-  the 18 GB dense `Qwen3.6-27B` and **3.26** for the 25 GB dense `Dolphin-Mistral-24B` Q8.
-  Nearly the same file sizes, **5.8× apart**.
-  Two candidate actions, neither taken unilaterally since model choice is a preference, not
-  a defect: (a) re-pull the 24B at `Q4_K_M` — roughly half the bytes, so roughly **6–7
-  tok/s**, for a quality difference that is small at 24B, and it costs one `ollama pull`;
-  (b) drop or demote the two slow dense models, which are doing nothing the MoEs don't do
-  faster. Storage is no longer a reason to prune (AIVault is no longer capped), but speed
-  is.
-  **The general rule, worth internalising before the next download:** total size decides
-  whether it fits, **active** parameters decide how fast it runs. Check the model name for
-  an `A<n>B` suffix before checking the file size. See
-  [bytes read per token](/playbooks/gpu-passthrough-ollama-vulkan.md#bytes-read-per-token-is-the-lever--which-means-moe-not-size).
+  than permanently stolen, and which had never been tuned on this host until 2026-07-29
+  (see the GTT entry under Resolved).
+  **The GTT half is now done — applied and measured 2026-07-29** (see Resolved): GTT was
+  raised 31.2 → 72 GiB at the bootloader, the addressable pool grew 63.2 → **104 GiB**, and
+  the full 7-model re-benchmark (label `gtt72`) came back flat — confirming GTT is a
+  capacity lever, not a speed one.
+  **What remains is the UMA half only, and it is the sole remaining item from the
+  2026-07-29 optimisation plan:** drop UMA 32GB → **16GB** in BIOS, returning 16GB
+  permanently to the fleet while the pool stays large (16 + 72 ≈ 88 GiB). Decision rule
+  fixed in advance, against the new A-side (the `gtt72` figures, not the pre-GTT
+  Baseline): **if `gemma-4-26B-A4B` — the model actually worth running — stays within ~10%
+  of 24.49 tok/s, i.e. above ~22.0, take the 16GB side.** The counterweight to price in:
+  UMA measures roughly **+11% faster than GTT** for equivalent capacity, so expect to pay
+  something. Blocked only on Dave being physically at the console for the BIOS trip.
+  Procedure and verification steps in
+  [The A/B worth running](/playbooks/gpu-passthrough-ollama-vulkan.md#the-ab-worth-running).
 
 * **AIVault has no pool-usage alert, and as of 2026-07-29 nothing structurally guarantees
   docker-stack's disk can't be starved.** Introduced deliberately by dropping the 203G
   `refreservation` on `vm-103-disk-0` (see Resolved). The risk is remote — 19.8M of actual
-  use against a 200G volume, on a pool with 368G free — but it is now a monitoring
+  use against a 200G volume, on a pool measured at 368G free on 2026-07-29 (the model
+  swap later that night freed a further ~10G net) — but it is now a monitoring
   responsibility rather than a ZFS guarantee. [grafana (CT110)](/containers/grafana.md)
   already scrapes the host via `pve-exporter` and the "N5 Pro Host Overview" dashboard
   already carries a storage pool usage panel; what's missing is an **alert rule** firing on
