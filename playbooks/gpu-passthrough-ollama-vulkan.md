@@ -241,8 +241,10 @@ difference either way.
 # Tuning notes
 
 * `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0` only matter once the GPU
-  backend is live (they did nothing on CPU). q8_0 halves KV cache, nearly lossless — worth
-  it with the 16384 context.
+  backend is live (they did nothing on CPU). q8_0 halves KV cache, nearly lossless — but
+  it is a **memory** lever only. A/B tested 2026-07-29 against f16 (see below): measured
+  speed effect is ≈0%, so keep q8_0 for the freed memory headroom under the 16384 context,
+  not for any throughput gain.
 * `OLLAMA_KEEP_ALIVE=-1` pins models in memory (shows as `Forever` in `ollama ps` and a
   giant duration in logs — normal). With q8 cache + 16384 ctx on a shared-DDR5 iGPU, watch
   for memory pressure — it's the first suspect if loads crawl or OOM. This is why
@@ -274,6 +276,23 @@ difference either way.
   model corroborate the bandwidth-bound diagnosis in *UMA and GTT*, below: this iGPU is
   starved on memory bandwidth, not compute, so GPU core clock/power-state tuning is not
   worth pursuing further here.
+* **KV cache type (f16 vs q8_0) A/B'd 2026-07-29 — reverted to q8_0, not a speed lever.**
+  Backed up `override.conf` outside the drop-in dir (`/root/ollama-override.bak-task6`),
+  switched `OLLAMA_KV_CACHE_TYPE` q8_0 → f16, `daemon-reload` + restart, and verified the
+  **live process** (not the file) via `systemctl show ollama -p Environment` both before
+  and after — the drop-in directory must stay clean of stray files, a past incident there
+  silently broke env propagation. Ran the harness 3× per model against the
+  `baseline-uma32-gtt31-ctx16k-kvq8` numbers (gemma-4-26B-A4B 24.82 tok/s,
+  Moonlit-Mirage-12B 10.88 tok/s). kv-f16 means: gemma-4-26B-A4B 24.77 tok/s (**-0.20%**),
+  Moonlit-Mirage-12B 11.00 tok/s (**+1.10%**). **Decision rule, fixed in advance:** both
+  models needed to gain more than 3% to keep f16 pinned; neither cleared it (gemma-4-26B-A4B
+  actually regressed slightly), so reverted to q8_0 — confirmed read-back
+  `OLLAMA_KV_CACHE_TYPE=q8_0` and `active` from the live process, drop-in directory clean,
+  backup removed. This contradicts the widely-repeated "~10% faster" claim for KV
+  quantisation on this silicon, and matches a community writeup on the same silicon that
+  found zero speed effect (29.0 vs 29.0 tok/s): q8_0's value here is the halved KV cache
+  memory footprint, not throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service
+  active.
 
 # UMA and GTT — the memory pool, and how it's split
 
