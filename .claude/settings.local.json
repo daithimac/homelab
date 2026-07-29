@@ -91,7 +91,8 @@
       "Bash(dig +short CAA 133gsl.ie @1.1.1.1)",
       "Bash(grep -rnE '\\(rewrite|resolve|points?|answers?\\).{0,60}\\(192\\\\.168\\\\.0\\\\.[0-9]+\\)' --include='*.md' containers/ network/ playbooks/ host/ storage/)",
       "Bash(ls -la /Users/davidward/.claude/plans/ 2>/dev/null | head -40)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(git fetch *)"
     ]
   }
 }
