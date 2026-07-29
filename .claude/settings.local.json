@@ -89,7 +89,9 @@
       "Bash(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@192.168.0.10 'echo PVE-OK; hostname' 2>&1 | tail -5; echo \"--- rc=$? ---\"; grep -iE \"^Host |HostName\" ~/.ssh/config 2>/dev/null | head -20)",
       "Bash(dig +short NS 133gsl.ie @1.1.1.1)",
       "Bash(dig +short CAA 133gsl.ie @1.1.1.1)",
-      "Bash(grep -rnE '\\(rewrite|resolve|points?|answers?\\).{0,60}\\(192\\\\.168\\\\.0\\\\.[0-9]+\\)' --include='*.md' containers/ network/ playbooks/ host/ storage/)"
+      "Bash(grep -rnE '\\(rewrite|resolve|points?|answers?\\).{0,60}\\(192\\\\.168\\\\.0\\\\.[0-9]+\\)' --include='*.md' containers/ network/ playbooks/ host/ storage/)",
+      "Bash(ls -la /Users/davidward/.claude/plans/ 2>/dev/null | head -40)",
+      "Bash(git checkout *)"
     ]
   }
 }
