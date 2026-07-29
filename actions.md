@@ -299,7 +299,10 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   inferred:** CT120's configured chat model is `Moonlit-Mirage-12B-i1-GGUF`, a 12B **dense**
   model — precisely the shape the source author used as their dense control and measured at
   10.6 t/s against 21.6 for a 35B MoE. Finding a roleplay-tuned MoE equivalent is the
-  judgement call there, not the speed argument. Note the AIVault ceiling item above becomes a blocker if this
+  judgement call there, not the speed argument. **Procedure:**
+  [AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-2--model-shape-the-main-event),
+  which sizes the candidates against the GTT ceiling and reuses the Phase 0 benchmark so the
+  before/after numbers are comparable. Note the AIVault ceiling item above becomes a blocker if this
   happens: MoE models are 36–59GB each and only 164G is free. See
   [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-one-law-bytes-per-token-not-parameter-count).
 
@@ -315,7 +318,9 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   insurance, converts a host lock into one dead container), and whether `KEEP_ALIVE=-1`
   should become a finite TTL. Worth doing **before** any experiment with larger models, not
   after. See
-  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number).
+  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number),
+  and **[AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-1--guardrail-before-pulling-anything-larger)**
+  for the sizing and the commands.
 
 ## P3 — open
 
@@ -334,7 +339,11 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   class of mistake on Unraid. `amdgpu.gttsize` is deprecated (warns, then ignores you) and
   `amdttm.pages_limit` is for the out-of-tree DKMS module — neither is the right knob.
   Batch the reboot with the BIOS UMA decision above. See
-  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-gtt-ceiling--likely-capped-at-31-gib-here).
+  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-gtt-ceiling--likely-capped-at-31-gib-here),
+  and **[AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-0--baseline-and-the-five-unknowns)**
+  — the check is step 1 there, and its outcome is an explicit decision gate: if GTT comes
+  back at ~46 GiB or more, the ~31 GiB arithmetic is wrong and the playbook needs correcting
+  rather than acting on.
 
 * **[Open WebUI](/containers/openwebui.md) has never been probed for authentication from
   off-box.** Raised 2026-07-28. The source author found their own Open WebUI returning

@@ -424,8 +424,12 @@ about plaintext credentials on docker-stack.
 
 # Verification sequence
 
-Nothing above is confirmed on this host. In the order that gives the most information for
-the least risk:
+Nothing above is confirmed on this host. **The full ordered procedure now lives in
+[AI optimisation runbook](ai-optimisation-runbook.md)** — baseline benchmark, memory
+guardrail, model swap, cheap levers, reboot batch, with result tables to fill in and
+rollback for each step. What follows is the short version.
+
+In the order that gives the most information for the least risk:
 
 ```bash
 # 1. Is GTT actually capped at ~31 GiB?  (card1, not card0)

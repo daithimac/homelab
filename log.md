@@ -1,5 +1,44 @@
 # Directory Update Log
 
+## 2026-07-29 (1)
+* **Turned the previous day's findings into an executable runbook —
+  [AI optimisation runbook](playbooks/ai-optimisation-runbook.md) — without running any of
+  it.** Entry (3) below produced
+  [Local LLM daily driver](playbooks/local-llm-daily-driver.md), which explains *why*
+  inference is slow and what the external source measured. It stopped short of a procedure,
+  and its findings were sitting in `actions.md` as three separate items with no ordering
+  between them. This session added the ordering.
+  **Five phases, sequenced so that each one ends with a number.** Phase 0 establishes a
+  baseline and answers the five unverified unknowns (GTT ceiling, bootloader, ARC, governor,
+  Mesa/Ollama versions). Phase 1 is the memory guardrail. Phase 2 is the model swap. Phase 3
+  is the cheap levers, deliberately one at a time. Phase 4 is the reboot batch. Phase 5
+  folds results back into the bundle.
+  **Two ordering decisions worth recording, because they are not obvious.** First, **safety
+  before speed**: the memory guardrail lands *before* any larger model is pulled, since on
+  unified memory a GPU OOM hard-locks the whole host — which here means the NAS and all LAN
+  DNS, not just [CT102](containers/ollama.md). Second, **the reboot batch goes last**: both
+  Phase 2 model candidates (`qwen3:30b-a3b` at ~19GB, `gpt-oss:20b` at ~13GB) fit under even
+  the pessimistic ~31 GiB GTT ceiling, so the main win does **not** depend on raising it.
+  That means the reboot can be judged against a measured gain rather than a predicted one.
+  **Phase 0 carries an explicit decision gate rather than an assumption.** If
+  `mem_info_gtt_total` comes back at ~46 GiB or more, the ~31 GiB arithmetic in the
+  daily-driver playbook is simply wrong, and the instruction is to correct that page before
+  acting on anything else in it. Writing the falsification condition into the runbook felt
+  more useful than writing the prediction alone — the whole reason the source write-up was
+  worth reading is that its author kept finding their own confident beliefs were untrue.
+  The benchmark is one fixed command (200 tokens, temperature 0, median of three) reused
+  **identically** at every stage so the numbers stay comparable, and it echoes back the
+  `model` field on purpose: the source author published a wrong attribution by measuring one
+  model while their notes said another. Every phase has its own rollback line, and there are
+  non-regression checks for the fact that this box is the NAS and the sole DNS server.
+  Linked from [playbooks/index.md](playbooks/index.md) and from the "Verification sequence"
+  section of the daily-driver page, and the three
+  [actions.md](actions.md) items raised yesterday now each point at the phase that executes
+  them.
+  **Still nothing verified.** This session had no network route to `192.168.0.x`, so every
+  results table in the runbook is deliberately empty and the page says so in its own
+  citations. The runbook is the deliverable; the numbers are Dave's to collect.
+
 ## 2026-07-28 (3)
 * **Reviewed an external N5 Pro LLM benchmarking write-up against this bundle, and it
   overturned the bundle's central claim about inference speed.** Dave supplied a July 2026
