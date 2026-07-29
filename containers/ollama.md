@@ -49,11 +49,17 @@ bind-mounted into this container at `/mnt/models` (`OLLAMA_MODELS=/mnt/models`).
 
 First actual inventory of the store — previously only one model was documented anywhere in
 the bundle, leaving ~80G unexplained. It is **not** unexplained: eight models, ~108 GB
-nominal, no orphaned blobs, nothing to reclaim. (The eighth — the 24B at Q4_K_M — was
+nominal (104G on disk, `zfs list -o used AIVault/ollama-models` = 103G / `du -sh` = 104G,
+2026-07-29), no orphaned blobs, nothing to reclaim. (The eighth — the 24B at Q4_K_M — was
 pulled 2026-07-29 specifically for the Q4-vs-Q8 A/B below.)
 
 Sorted by measured speed, not size — because on this hardware the two are only loosely
-related (see below).
+related (see below). **The tok/s column is the pre-GTT-raise Baseline figure for the seven
+shared-harness models** (the post-raise `gtt72` re-run moved every one of them by ≤2.2%, see
+the playbook's [gtt72 table](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split))
+**— except the Q4_K_M row, which is post-`gtt72` by construction** since it was pulled and
+benched after the raise. That's why the Q8 shows 3.26 here against 3.22 in the Q4
+comparison below: same model, two measurement rounds, ≤1.2% apart.
 
 | Model | Type | Size | **tok/s** | Verdict |
 |---|---|---|---|---|
@@ -62,8 +68,8 @@ related (see below).
 | `ReadyArt/Melody1437-26B-A4B-v2.0-GGUF:latest` | **MoE ~4B** | 17 GB | **19.71** | Strong |
 | `mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest` | dense | 7.5 GB | 10.88 | Usable |
 | `Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF:Q8_0` | dense | 7.7 GB | 10.43 | Usable |
+| `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q4_K_M` | dense | 14 GB | **5.63** | **A/B vs Q8 — decision pending** |
 | `DavidAU/Qwen3.6-27B-Fable-Fusion-711-...-MTP-GGUF:latest` | dense | 18 GB | **4.28** | Slow for its size |
-| `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q4_K_M` | dense | 14 GB | **5.63** | Pulled 2026-07-29 for A/B vs the Q8 below — owner decision pending on which to keep |
 | `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q8_0` | dense | 25 GB | **3.26** | Slowest; Q8 |
 
 **The headline: the fastest model in the store is also one of the largest.** The 16 GB
@@ -78,27 +84,30 @@ rule for dense models are in the playbook's
 
 One thing acted on, tracked in [actions.md](/actions.md): the 24B was available only as
 **Q8**, and the dense rule (`~80 ÷ size-in-GB`) predicted a Q4_K_M at ~13-14 GB would land
-around **5.7-6.2 tok/s** — call it "roughly twice as fast" against the Q8's 3.22 tok/s (the
-current post-`gtt72` figure for that model; see the playbook's
-[gtt72 table](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split)).
-**Measured: 5.63 tok/s**
-(3 runs, pulled and benched 2026-07-29, 14 GB on disk) — a **1.75×** speedup over the Q8,
-just under the predicted band's low end, and 14 GB × 5.63 = **79**, in line with the
-rule's ~80 constant. The dense rule's track record holds up here to within a few percent.
-Both Q4_K_M and Q8_0 are kept side by side for now — **the keep/drop decision is the
+around **5.7-6.2 tok/s** against the Q8's 3.22 tok/s (post-`gtt72` figure for that model —
+see the provenance note above). **Measured: the Q4 runs 1.75× the Q8** (5.63 vs 3.22,
+predicted 5.7-6.2) — 3 runs, pulled and benched 2026-07-29, 14 GB on disk, just under the
+predicted band's low end. 14 GB × 5.63 = **79**, in line with the rule's ~80 constant: the
+dense rule's track record holds up here to within a few percent. Both Q4_K_M and Q8_0 are
+kept side by side for now — **the keep/drop decision between the two quants is the
 owner's**, weighing that ~1.75× speed against whatever quality loss the Q4 quantization
 costs at this size.
 
-The other item, still open: the two slow dense models (27B, 24B) are doing nothing the
-MoEs don't do faster. Storage is no longer a reason to prune — AIVault is no longer capped
-at 164G (see [AIVault](/storage/aivault.md)) — but speed is.
+That quant-level decision is narrower than, and separate from, the other still-open item:
+whether the whole 24B/27B dense family is worth keeping at all, since the two slow dense
+models (27B, 24B — at either quant) are doing nothing the MoEs don't do faster. Dropping
+the family would moot the quant choice above; keeping it, the quant choice still stands.
+Storage is no longer a reason to prune — AIVault is no longer capped at 164G (see
+[AIVault](/storage/aivault.md)) — but speed is, and both calls belong to the owner.
 
 # Inference performance
 
-All seven models benchmarked 2026-07-29 (three runs each via `/root/bench-ollama.sh`), all
-100% GPU at 16384 context — see the table above and the playbook's
-[Baseline section](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) for method and
-reproduction. Spread is **3.26 → 24.82 tok/s (7.6×)** on identical hardware and identical
+The seven shared-harness models were benchmarked three-run on 2026-07-29 (Baseline +
+`gtt72`, all 100% GPU at 16384 context) via `/root/bench-ollama.sh` — see the table above
+and the playbook's [Baseline section](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline)
+for method and reproduction. The 24B Q4_K_M (eighth row) was pulled and benched separately,
+after both of those (label `q4-vs-q8`, post-`gtt72`). Spread across all eight rows, as
+tabulated above, is **3.26 → 24.82 tok/s (7.6×)** on identical hardware and identical
 config.
 
 **For dense models throughput is predictable: roughly `80 ÷ size in GB` tok/s**, accurate

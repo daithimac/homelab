@@ -232,9 +232,13 @@ choosing a model here, read the name for an `A<n>B` suffix (`26B-A4B` = 26B tota
 active) before reading the file size. On this hardware **MoE is not a nice-to-have, it is
 the difference between usable and not** — and dense above ~12B is largely not viable.
 
-Secondary, still worth acting on: **quantisation is cheap speed.** The 24B is a `Q8_0` at
-3.26 tok/s; its `Q4_K_M` would be roughly half the bytes and therefore roughly **twice as
-fast**, for a quality difference that is small at 24B.
+Secondary, acted on: **quantisation is cheap speed — tested, not just predicted.** The 24B
+`Q8_0` ran at 3.26 tok/s (3.22 post-`gtt72`); a `Q4_K_M` was pulled alongside it 2026-07-29
+(14 GB on disk) and measured at **5.63 tok/s** — **1.75×** the Q8, not quite the "roughly
+twice as fast" the halved-bytes prediction implied, but in line with the dense rule's
+`~80 ÷ size-in-GB` (14 GB × 5.63 = 79). Both quants are being kept side by side for now;
+keep/drop is the owner's call on quality vs. that ~1.75× speed. Details and the full
+model-inventory table: [containers/ollama.md](/containers/ollama.md#model-inventory-2026-07-29).
 
 Both of these dwarf the UMA question below, which is expected to be a single-digit-percent
 difference either way.
