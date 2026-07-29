@@ -141,7 +141,7 @@ harness (`/root/bench-ollama.sh`, label `baseline-uma32-gtt31-ctx16k-kvq8`), ide
 prompt (`"Write a 200-word summary of how DNS resolution works."`) via
 `pct exec 102 -- ollama run --verbose <model> "<prompt>"`, reading `eval rate`. Ollama
 0.31.1, Vulkan/iGPU, `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_KV_CACHE_TYPE=q8_0`,
-`OLLAMA_FLASH_ATTENTION=1`, BIOS UMA **32GB**. Both models reported `100% GPU` in
+`OLLAMA_FLASH_ATTENTION=1`, BIOS UMA **32GB**. All seven models reported `100% GPU` in
 `ollama ps`.
 
 | Model | Type | Quant | Size | t/s | Runs |
