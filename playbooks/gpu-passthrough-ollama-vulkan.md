@@ -248,6 +248,15 @@ difference either way.
 * Discovery may set a huge `default_num_ctx` (262144, confirmed in the logs 2026-07-29)
   because it sees the full UMA+GTT pool. The explicit `OLLAMA_CONTEXT_LENGTH=16384`
   overrides per-model; keep it set.
+* **CPU governor is already optimal and is not a lever here.** Confirmed 2026-07-29:
+  all 24 threads report `scaling_governor=performance` and
+  `energy_performance_preference=performance` under `amd-pstate-epp` with
+  `amd_pstate status=active`. There is no `/sys/firmware/acpi/platform_profile` on this
+  host. `/sys/class/platform-profile/` does exist but is empty (no registered devices) —
+  no platform-profile handler is bound, so there's no ACPI platform-profile knob to pull
+  either way; that interface is laptop firmware, not present on the N5 Pro under Proxmox.
+  Community guidance ranking governor/power-profile as the top lever for this CPU was
+  written against a machine that exposed it; here it is already done.
 
 # UMA and GTT — the memory pool, and how it's split
 
