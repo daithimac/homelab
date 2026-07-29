@@ -136,8 +136,9 @@ passthrough regression.
 
 # Baseline
 
-Measured 2026-07-29 on the live host, three runs per model, identical prompt
-(`"Write a 200-word summary of how DNS resolution works."`) via
+Figures below are **three-run means for all seven models**, measured 2026-07-29 with the
+harness (`/root/bench-ollama.sh`, label `baseline-uma32-gtt31-ctx16k-kvq8`), identical
+prompt (`"Write a 200-word summary of how DNS resolution works."`) via
 `pct exec 102 -- ollama run --verbose <model> "<prompt>"`, reading `eval rate`. Ollama
 0.31.1, Vulkan/iGPU, `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_KV_CACHE_TYPE=q8_0`,
 `OLLAMA_FLASH_ATTENTION=1`, BIOS UMA **32GB**. Both models reported `100% GPU` in
@@ -145,12 +146,13 @@ Measured 2026-07-29 on the live host, three runs per model, identical prompt
 
 | Model | Type | Quant | Size | t/s | Runs |
 |---|---|---|---|---|---|
-| `Qwen3.5-4B-...-Heretic-Literotica-i1-GGUF` | dense | i1 (~q4) | 2.7 GB | **23.88** | 23.88 / 23.34 / 23.84 (2.3% spread) |
-| `gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF` | **MoE ~4B active** | Q4_K_M | 16 GB | **24.77** | 1 |
-| `Melody1437-26B-A4B-v2.0-GGUF` | **MoE ~4B active** | — | 17 GB | **19.73** | 1 |
-| `Moonlit-Mirage-12B-i1-GGUF` | dense | i1 (~q4) | 7.5 GB | **10.94** | 10.94 / 10.93 / 10.94 (0.1% spread) |
-| `Qwen3.6-27B-Fable-Fusion-711-...-GGUF` | dense | — | 18 GB | **4.28** | 1 |
-| `Dolphin-Mistral-24B-Venice-Edition-GGUF` | dense | **Q8_0** | 25 GB | **3.26** | 1 |
+| `Qwen3.5-4B-...-Heretic-Literotica-i1-GGUF` | dense | i1 (~q4) | 2.7 GB | **23.54** | 23.91 / 23.46 / 23.24 (2.9% spread) |
+| `gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF` | **MoE ~4B active** | Q4_K_M | 16 GB | **24.82** | 24.77 / 24.69 / 24.99 (1.2% spread) |
+| `Melody1437-26B-A4B-v2.0-GGUF` | **MoE ~4B active** | — | 17 GB | **19.71** | 19.71 / 19.75 / 19.68 (0.4% spread) |
+| `Moonlit-Mirage-12B-i1-GGUF` | dense | i1 (~q4) | 7.5 GB | **10.88** | 10.92 / 10.92 / 10.79 (1.2% spread) |
+| `Qwen3.6-27B-Fable-Fusion-711-...-GGUF` | dense | — | 18 GB | **4.28** | 4.28 / 4.28 / 4.28 (0.0% spread) |
+| `Dolphin-Mistral-24B-Venice-Edition-GGUF` | dense | **Q8_0** | 25 GB | **3.26** | 3.26 / 3.26 / 3.26 (0.0% spread) |
+| `MistralRP-Noromaid-NSFW-Mistral-7B-GGUF` | dense | **Q8_0** | 7.7 GB | **10.43** | 10.43 / 10.43 / 10.44 (0.1% spread) |
 
 Cold load adds ~2.2 s for the 12B, ~3.3 s for the 4B, ~15 s for the 26B MoE and ~20 s for
 the 24B; warm reload is ~0.15 s. Prompt eval runs 250–470 tok/s warm.
@@ -188,7 +190,7 @@ comparable.
 
 ## Bytes read per token is the lever — which means MoE, not size
 
-The measurements span **3.26 → 24.77 tok/s, a 7.6× range, on identical hardware and
+The measurements span **3.26 → 24.82 tok/s, a 7.6× range, on identical hardware and
 identical config.** The variable is **how many bytes of weights cross the memory bus per
 token** — not parameter count, and not file size.
 
@@ -197,8 +199,9 @@ product is near-constant:
 
 | Dense model | Size | tok/s | size × tok/s |
 |---|---|---|---|
-| Qwen3.5-4B | 2.7 GB | 23.88 | 64 |
-| Moonlit-Mirage-12B | 7.5 GB | 10.94 | 82 |
+| Qwen3.5-4B | 2.7 GB | 23.54 | 64 |
+| Moonlit-Mirage-12B | 7.5 GB | 10.88 | 82 |
+| MistralRP-Noromaid-7B | 7.7 GB | 10.43 | 80 |
 | Qwen3.6-27B-Fable | 18 GB | 4.28 | 77 |
 | Dolphin-Mistral-24B Q8 | 25 GB | 3.26 | 81 |
 
@@ -210,8 +213,8 @@ token:
 
 | MoE model | Size | Active | tok/s | Dense rule would predict |
 |---|---|---|---|---|
-| gemma-4-26B-A4B | 16 GB | ~4B | **24.77** | 5.0 |
-| Melody1437-26B-A4B | 17 GB | ~4B | **19.73** | 4.7 |
+| gemma-4-26B-A4B | 16 GB | ~4B | **24.82** | 5.0 |
+| Melody1437-26B-A4B | 17 GB | ~4B | **19.71** | 4.7 |
 
 Off by **5×**. An earlier revision of this section stated `80 ÷ GB` as a universal rule for
 this host — it is dense-only, and every model measured at the time happened to be dense,
@@ -220,7 +223,7 @@ which is exactly why the error survived being "validated".
 **The practical consequence, and it is the single most useful finding here:**
 
 > The **fastest** model on this box is also one of the **largest**. `gemma-4-26B-A4B` at
-> 16 GB runs at 24.77 tok/s — faster than the 7.5 GB dense 12B (10.94) and **5.8× faster
+> 16 GB runs at 24.82 tok/s — faster than the 7.5 GB dense 12B (10.88) and **5.8× faster
 > than the 18 GB dense 27B** (4.28), which is nearly the same file size.
 
 So: **total size decides whether it fits; active parameters decide how fast it runs.** When
@@ -341,7 +344,7 @@ Verify both halves before benchmarking — `dmesg | grep -i 'VRAM:'` for UMA,
 for the sum. Then re-run the exact Baseline prompt and models.
 
 Decision rule, fixed in advance: **if the MoE (`gemma-4-26B-A4B`, the model actually worth
-running) stays within ~10% of 24.77 tok/s, take the B-side** — 16GB back to the fleet is
+running) stays within ~10% of 24.82 tok/s, take the B-side** — 16GB back to the fleet is
 worth a modest throughput cost. If it drops materially more than that, UMA is doing real
 work and 32GB stands.
 
@@ -352,5 +355,5 @@ much cheaper to try first.
 # Citations
 
 [1] n5-pro-homelab Claude Skill — references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
-[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (6 models), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
-[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, and Ollama bug #16462. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.77 here — different stack, same regime. Treat as cross-reference, not as a description of this host.
+[2] direct host review 2026-07-29 — `pct exec 102 -- ollama run --verbose` benchmark runs (7 models, three runs each via `/root/bench-ollama.sh`), `systemctl show ollama -p Environment`, `ollama list`/`ollama ps`, `dmesg | grep VRAM:`, `/proc/cmdline`, `/sys/module/ttm/parameters/pages_limit`, `mem_info_gtt_total`, ollama journal `inference compute` line (Baseline, dense-vs-MoE finding, UMA/GTT split, live override contents, concurrency bounds)
+[3] Community writeup, same silicon (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150, 96GB DDR5-5600) on Unraid + llama.cpp/llama-swap rather than this host's Proxmox + Ollama — 13 models benchmarked. Source of the small-UMA/large-GTT guidance, the `ttm.pages_limit` syntax, the deprecation of `amdgpu.gttsize`, the ~+11% UMA-over-GTT figure, Vulkan-over-ROCm for gfx1150, the bytes-per-token model, and Ollama bug #16462. Its gemma-4-26B-A4B measured 29.5 tok/s against 24.82 here — different stack, same regime. Treat as cross-reference, not as a description of this host.

@@ -49,11 +49,11 @@ related (see below).
 
 | Model | Type | Size | **tok/s** | Verdict |
 |---|---|---|---|---|
-| `mradermacher/gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF:Q4_K_M` | **MoE ~4B** | 16 GB | **24.77** | **Fastest model here** |
-| `wkplhc/Qwen3.5-4B-NSFW-ARA-Heretic-Literotica-i1-GGUF:latest` | dense | 2.7 GB | 23.88 | Fast, small |
-| `ReadyArt/Melody1437-26B-A4B-v2.0-GGUF:latest` | **MoE ~4B** | 17 GB | **19.73** | Strong |
-| `mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest` | dense | 7.5 GB | 10.94 | Usable |
-| `Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF:Q8_0` | dense | 7.7 GB | ~10 (est.) | Not yet benchmarked |
+| `mradermacher/gemma-4-26B-A4B-it-ultra-uncensored-heretic-i1-GGUF:Q4_K_M` | **MoE ~4B** | 16 GB | **24.82** | **Fastest model here** |
+| `wkplhc/Qwen3.5-4B-NSFW-ARA-Heretic-Literotica-i1-GGUF:latest` | dense | 2.7 GB | 23.54 | Fast, small |
+| `ReadyArt/Melody1437-26B-A4B-v2.0-GGUF:latest` | **MoE ~4B** | 17 GB | **19.71** | Strong |
+| `mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest` | dense | 7.5 GB | 10.88 | Usable |
+| `Ttimofeyka/MistralRP-Noromaid-NSFW-Mistral-7B-GGUF:Q8_0` | dense | 7.7 GB | 10.43 | Usable |
 | `DavidAU/Qwen3.6-27B-Fable-Fusion-711-...-MTP-GGUF:latest` | dense | 18 GB | **4.28** | Slow for its size |
 | `bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF:Q8_0` | dense | 25 GB | **3.26** | Slowest; Q8 |
 
@@ -75,10 +75,11 @@ no longer a reason to prune — AIVault is no longer capped at 164G (see
 
 # Inference performance
 
-Six models benchmarked 2026-07-29, all 100% GPU at 16384 context — see the table above and
-the playbook's [Baseline section](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) for
-method and reproduction. Spread is **3.26 → 24.77 tok/s (7.6×)** on identical hardware and
-identical config.
+All seven models benchmarked 2026-07-29 (three runs each via `/root/bench-ollama.sh`), all
+100% GPU at 16384 context — see the table above and the playbook's
+[Baseline section](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) for method and
+reproduction. Spread is **3.26 → 24.82 tok/s (7.6×)** on identical hardware and identical
+config.
 
 **For dense models throughput is predictable: roughly `80 ÷ size in GB` tok/s**, accurate
 to a few percent above ~7 GB. **For MoE models that rule is wrong by ~5×** and must not be
