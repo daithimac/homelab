@@ -162,9 +162,8 @@ Benchmarks are taken with `/root/bench-ollama.sh` on the host, which appends to
 
     /root/bench-ollama.sh <label> [runs] [model-substring]
 
-Compare rows by label, never by memory. `eval_rate` is the metric; `eval_count`
-varies wildly between runs on models that ignore the word limit, so wall-clock and
-total duration are not comparable.
+Compare rows by label, never by memory. `eval_rate` is the metric — see the
+reproduction notes below for why.
 
 **On the old `~3.2 tok/s` figure — the honest answer is that it cannot be attributed, and
 two earlier attempts to settle it were both wrong.** The first claimed it was "wrong by
