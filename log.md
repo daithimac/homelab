@@ -1,5 +1,241 @@
 # Directory Update Log
 
+## 2026-07-30 (1)
+* **Executed the iGPU optimisation plan overnight (evening of 2026-07-29 into the early
+  hours) — every transferable lever from the Strix Point writeup tested against this host,
+  everything measured, only what helped kept. Two levers rejected on their numbers, two
+  closed as already-optimal or not-actionable, one capacity raise applied, one model
+  swapped on Dave's call — and one self-inflicted outage: the reboot's shutdown loop took
+  down LAN DNS and severed the session driving it. Of the optimisation plan itself, only
+  the UMA BIOS trip remains open (the AIVault pool-alert P2 — a Phase-1 follow-up, not an
+  optimisation lever — also still stands).**
+  The plan: the community writeup cited as [3] in the playbook benchmarks the same silicon
+  (Ryzen AI 9 HX 370 / Radeon 890M / gfx1150) on a different stack (Unraid + llama.cpp),
+  so its levers are hypotheses here, not conclusions. Each one got an A/B with the
+  **decision rule fixed before the measurement**, every figure was read from the live
+  process or live sysfs rather than config files, and every run is preserved by label in
+  `/root/bench-results.csv` on the host. The harness came first: `/root/bench-ollama.sh`
+  (fixed prompt, three runs per model, `eval rate` from `--verbose`), hardened after
+  review with a 30-minute timeout writing a `TIMEOUT` sentinel, pre-flight checks and
+  argument validation.
+  **Closed without a change — CPU governor.** The writeup's top lever is moot here: all 24
+  threads already run `performance`/EPP-performance under `amd-pstate-epp`, and this board
+  exposes no ACPI platform-profile at all. Already optimal, recorded as such.
+  **The baseline got real.** Full three-run baseline across all seven models (label
+  `baseline-uma32-gtt31-ctx16k-kvq8`), spreads ≤2.9%: gemma-4-26B-A4B (MoE) 24.82,
+  Qwen3.5-4B 23.54, Melody1437-26B-A4B (MoE) 19.71, Moonlit-Mirage-12B 10.88,
+  MistralRP-7B 10.43 — its first-ever measurement, and 7.7 GB × 10.43 ≈ 80 lands the
+  dense 80÷GB rule again — Qwen3.6-27B 4.28, Dolphin-24B Q8 3.26.
+  **Rejected — GPU dpm level.** Forcing `power_dpm_force_performance_level` to `high`
+  measured **+0.56%** (gemma MoE) and **+0.92%** (12B dense) against a both->3% rule.
+  Reverted to `auto`, read-back confirmed. The sub-1% deltas on both model classes
+  corroborate the bandwidth-bound diagnosis: clock pinning buys nothing here.
+  **Rejected — KV cache f16.** Against q8_0: **−0.20%** (gemma, a slight regression) and
+  **+1.10%** (12B — inside its own 1.2% run-to-run spread, i.e. noise). The "f16 is ~10%
+  faster" folklore is contradicted here exactly as it was in [3]'s own A/B; q8_0 stays,
+  valued as the pure memory lever it is. Reverted with the live process verified both
+  directions.
+  **No-op by rule — software currency.** Ollama 0.31.1 vs latest v0.32.5 is one minor
+  version behind a ≥2-minors threshold: skip. Mesa 25.0.7 is the newest
+  bookworm-backports offers, with nothing ≥25.3 available: skip, revisit condition
+  documented (backports shipping ≥25.3, or a CT102 rebuild on trixie). [3]'s +19.8%
+  prefill from Mesa 25.3+ does not justify pulling toolchain libraries across a Debian
+  release boundary into a working Vulkan chain.
+  **Kept — GTT raised 31.2 → 72 GiB** (`ttm.pages_limit=18874368
+  ttm.page_pool_size=18874368` via GRUB, backup at `/root/grub.bak-20260729`), taking the
+  iGPU's addressable pool from 63.2 to **104 GiB** (`total="104.0 GiB"` in Ollama's own
+  journal). This needed a full-fleet reboot, and the first attempt caused the session's
+  one genuine incident: **the guest-shutdown loop took down AdGuard (CT109) — the LAN's
+  only DNS — and severed the driving session mid-task**, because shutting everything down
+  includes shutting down name resolution for whatever is orchestrating the shutdown. The
+  reboot completed on a second attempt with an IP-only watcher. The lesson is now written
+  down twice: in the playbook's UMA/GTT section and as a standing bullet in
+  [troubleshooting-gotchas](playbooks/troubleshooting-gotchas.md) — sequence AdGuard last
+  down / first up, and expect the outage. Post-reboot, the full 7-model `gtt72` benchmark
+  came back flat (worst −2.1%, on Melody, inside its own 2.2% spread) — GTT kept per the
+  pre-fixed rule, since its value is capacity, not speed; a >3% drop anywhere would have
+  flagged the reboot itself.
+  **Model mix — Dave's calls, executed.** Dolphin-24B pulled at Q4_K_M (14 GB) and
+  measured against the Q8 on identical post-`gtt72` config: **5.63 vs 3.22 tok/s, 1.75×**
+  (predicted ~2× from the byte ratio; dense-rule product 79). Dave chose to keep the Q4
+  and remove the Q8 — done, model store **103G → 79.8G** — and explicitly chose *not* to
+  prune the slow dense families, which is recorded as a decision rather than left
+  dangling. The levers that don't transfer are also recorded so nobody re-litigates them:
+  llama.cpp's `-b`/`-ub` sweep and MTP speculative decoding (Ollama exposes neither),
+  llama-swap stack specifics, and ROCm (Vulkan is already the right backend here).
+  **What remains from the optimisation plan — the sole remaining item:** the UMA half of
+  the A/B, dropping the BIOS frame
+  buffer 32 → 16GB, which needs Dave physically at the console. (Separately, the AIVault
+  pool-usage alert P2 opened in Phase 1 also remains open in [actions.md](actions.md) —
+  a monitoring follow-up, not an optimisation lever.) The comparison base is the
+  `gtt72` run and the rule is fixed: gemma-4-26B-A4B stays above ~22.0 tok/s (within ~10%
+  of 24.49) → keep 16GB. Updated
+  [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md)
+  (tuning notes, UMA/GTT section, the A/B), [containers/ollama.md](containers/ollama.md)
+  (pool line, inventory with the Q4/Q8 swap),
+  [playbooks/troubleshooting-gotchas.md](playbooks/troubleshooting-gotchas.md) (DNS
+  gotcha), and [actions.md](actions.md) (GTT and model-mix P2s closed to Resolved, UMA
+  item re-scoped as the sole remaining plan item, AIVault-alert wording refreshed).
+
+## 2026-07-29 (9)
+* **Resolved `cl-helper plugin not detected` UI status issue in Character Library.**
+  Root cause: `apiRequest` in `app/library.js` automatically prepends `/api`. Passing `/api/plugins/cl-helper/health` to `apiRequest` produced `/api/api/plugins/cl-helper/health` (404 Not Found), causing `checkClHelperPlugin` health checks to fail. Restored `/plugins/cl-helper` endpoint paths for all `apiRequest` invocations across extension modules and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (8)
+* **Stripped `accept-encoding` in SillyTavern's `corsProxyMiddleware`.**
+  Fixed backend issue in `/opt/sillytavern/app/src/middleware/corsProxy.js` where forwarded `accept-encoding` request headers caused target servers (like CharacterTavern) to return gzipped bodies while `node-fetch` uncompressed the stream, producing garbled gzip binary bytes in client responses. Added `accept-encoding` to `headersToRemove` and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (7)
+* **Pre-populated `_proxyOrigins` set in Character Library `provider-utils.js`.**
+  Fixed issue where direct browser fetch attempts to `character-tavern.com` returned raw gzipped binary bytes (`\x1f\x8b\x08...`) instead of routing through SillyTavern's `/proxy/`. Pre-loaded third-party provider domains into `_proxyOrigins` so API calls immediately use SillyTavern's CORS proxy. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (6)
+* **Resolved CharacterTavern JSON.parse unexpected character error in Character Library.**
+  Fixed root cause where `CL_HELPER_PLUGIN_BASE` was pointing to `/plugins/cl-helper` instead of `/api/plugins/cl-helper`. Requests to `/plugins/cl-helper/health` returned 404 HTML (`<!DOCTYPE html>...`), which failed JSON parsing. Updated base URLs across extension modules, added `safeJson` error handling, and restarted `sillytavern.service`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (5)
+* **Installed cl-helper server plugin for Character Library into CT120 via SSH.**
+  Copied `extras/cl-helper` to `/opt/sillytavern/app/plugins/cl-helper`, set ownership to `sillytavern:sillytavern`, verified `enableServerPlugins: true` in `config.yaml`, and restarted `sillytavern.service`. Log output confirmed `[cl-helper] Character Library helper plugin loaded`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (4)
+* **Installed SillyTavern-CharacterLibrary extension into CT120 via SSH.**
+  Cloned [SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary) to `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary`, updated directory permissions (`chown -R sillytavern:sillytavern`), and restarted `sillytavern.service`. Verified container status `active (running)`. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (3)
+* **Documented resolution for SillyTavern CORS proxy error when searching external character hubs.**
+  Character searches from hubs like CharacterTavern, PygmalionAI, and WyvernAI fail with `"Search failed: CORS proxy is disabled. Set enableCorsProxy: true in SillyTavern's config.yaml and restart the server"`. The Node.js backend proxy must be enabled to proxy requests around browser CORS restrictions. Setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and executing `systemctl restart sillytavern.service` resolves the failure. Updated [containers/sillytavern.md](containers/sillytavern.md) and [actions.md](actions.md).
+
+## 2026-07-29 (2)
+* **Dave pointed out that Phases 0–2 produced no throughput improvement. Chasing that down
+  found the actual lever — and caught me getting the same class of thing wrong twice, in
+  opposite directions, before evidence settled it.**
+  The observation was correct and always going to be: Phase 0 was measurement only, Phase 1
+  reclaimed disk, and Phase 2's own plan text predicted "this should not change
+  single-stream tok/s". Worth stating plainly rather than letting "efficiency plan" imply
+  speed that was never on the table.
+  **Wrong turn one.** Reasoning that inference is bandwidth-bound, I predicted the 25 GB
+  `Dolphin-Mistral-24B` **Q8_0** would run at ~3.3 tok/s. It measured **3.26** — matching
+  the bundle's old `~3.2 tok/s` figure almost exactly, so I concluded that figure had been
+  **correct all along** and that entry (1)'s "wrong by ~3.4×" claim was the error.
+  **Wrong turn two.** Dave held the correction, noting the likely source discussed **Q4**
+  models rather than Q8. That undercuts the match: a Q4 at ~3.2 tok/s implies roughly a 45B
+  dense model, not the 24B. **Both of my readings inferred a model from one matching
+  number.** The defensible statement is narrow: 3.2 tok/s implies **~25 GB of dense
+  weights**, satisfied by a 24B at Q8 or a ~45B at Q4, and nothing on record distinguishes
+  them. Now recorded as "unattributed, implies ~25 GB dense", with both wrong turns left
+  visible — an unqualified measurement can be wrongly *dismissed* as easily as wrongly
+  *trusted*, and this one managed both inside a few hours.
+  **Then Dave supplied a benchmark writeup covering the same silicon** (Ryzen AI 9 HX 370 /
+  Radeon 890M / gfx1150 / 96GB DDR5-5600, but on Unraid + llama.cpp rather than this host's
+  Proxmox + Ollama, 13 models). Its central claim — **speed is set by bytes read per token,
+  not parameter count** — exposed a real error in what I had just written into the bundle.
+  I had generalised `tok/s ≈ 80 ÷ size in GB` as a rule for this host. **It is a dense-only
+  rule.** Every model I had benchmarked happened to be dense, which is precisely why it
+  looked validated. Tested it directly against `gemma-4-26B-A4B` (16 GB, MoE, ~4B active):
+  the rule predicts 5 tok/s, it measured **24.77** — off by 5×.
+  **The finding that actually answers Dave's question.** Six models now measured on
+  identical hardware and config, spanning **3.26 → 24.77 tok/s (7.6×)**:
+  the 16 GB MoE gemma at **24.77**, the 2.7 GB dense 4B at 23.88, the 17 GB MoE
+  `Melody1437-26B-A4B` at **19.73**, the 7.5 GB dense 12B at 10.94, the 18 GB **dense**
+  `Qwen3.6-27B` at **4.28**, and the 25 GB dense 24B Q8 at 3.26. **The fastest model in the
+  store is also one of the largest**, and it beats a nearly identically-sized dense model by
+  **5.8×**. For dense models `80 ÷ GB` holds to a few percent (products: 64 / 82 / 77 / 81);
+  for MoE it is meaningless. Total size decides whether it fits; **active** parameters
+  decide how fast it runs — check the name for an `A<n>B` suffix before the file size.
+  **Second finding, from checking the writeup's claims against live state: GTT has never
+  been touched here.** `/proc/cmdline` carries no `ttm.*` parameters, so the borrowable
+  pool sits at the kernel default — `pages_limit` 8180431 pages = **31.2 GiB**, confirmed
+  against `mem_info_gtt_total`. The iGPU therefore addresses 32 GB UMA + 31.2 GiB GTT =
+  **63.2 GiB**, which is exactly what Ollama reports and which also corrects a stale
+  `48.0 GiB` win-condition in the playbook. This **inverts the guidance the playbook has
+  been carrying**: UMA is permanently stolen, GTT is borrowed and returned, and the standing
+  advice for this chip is *small UMA, large GTT* — the opposite of this host. So the Phase 3
+  A/B has been re-scoped from "32 vs 24GB UMA" (8GB, needs BIOS) to "16GB UMA + raised
+  `ttm.pages_limit`" (16GB returned, and **the GTT half needs only a reboot, not console
+  access**). Also confirmed this host is *not* affected by Ollama bug #16462 — it reports
+  the pool correctly rather than 2.0 GiB.
+  Renamed the playbook's "The real performance lever: BIOS UMA frame buffer" — wrong twice
+  over — and rewrote that section to cover both pools. Updated
+  [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md),
+  [containers/ollama.md](containers/ollama.md) (inventory re-sorted by measured speed, with
+  dense/MoE marked), and [actions.md](actions.md) (Resolved entry corrected again, UMA item
+  re-scoped, two new P2s for GTT and for the model mix). The writeup is cited as a
+  cross-reference, explicitly **not** as a description of this host — different OS and
+  different inference stack, though its gemma-4-26B-A4B at 29.5 tok/s against 24.77 here
+  puts them in the same regime.
+
+## 2026-07-29 (1)
+* **Executed the local-AI efficiency plan — measure first, then act. Phases 0–2 are done;
+  Phase 3 needs Dave at the BIOS. The headline is that the bundle's single inference
+  measurement was not just unqualified, it was wrong by ~3.4×.**
+  The plan existed because two P2 decisions ([UMA frame buffer](actions.md), [AIVault's
+  203G reservation](actions.md)) had been open since 2026-07-25/26 and neither could be
+  ranked honestly against a bundle containing exactly one inference number — `~3.2 tok/s`,
+  with no model, quant, context or date attached.
+  **Phase 0 — baseline.** Inventoried the model store for the first time: **seven models,
+  ~94 GB nominal / 89.7G on disk**, no orphaned blobs, nothing to reclaim. The plan had
+  suspected ~80G of unexplained bulk; there is none, which retires that concern rather than
+  confirming it. Worth noting for later: four of the seven (76 GB) sit well above the
+  7–14B q4 band the playbook calls "the pleasant range" here, and one 24B is a Q8.
+  Then built a repeatable benchmark — fixed prompt, three runs per model, reading
+  `eval rate` from `--verbose`. It is **very** repeatable: `Moonlit-Mirage-12B` returned
+  10.94 / 10.93 / 10.94 tok/s (0.1% spread), `Qwen3.5-4B` 23.88 / 23.34 / 23.84 (2.3%).
+  **The `~3.2 tok/s` figure reproduces nowhere near** — the real 12B number is ~3.4× higher.
+  That number had been load-bearing for the UMA decision, so it is now retired from the
+  playbook outright rather than merely annotated, and anything previously reasoned from
+  "iGPU inference here is ~3 tok/s" is worth revisiting. One trap recorded for whoever
+  re-runs this: the 4B ignores the word limit and rambles, so its `eval count` swung
+  1810 → 8094 → 2853 tokens between runs — **`eval rate` is stable, wall-clock is not**.
+  **Phase 1 — reclaimed the AIVault reservation.** `zfs set refreservation=none
+  AIVault/vm-103-disk-0` took the pool from **164G to 368G free** in one command. This was
+  a fourth option [actions.md](actions.md) had not listed, and it beat both options that
+  would have reclaimed space: shrinking the volume means `resize2fs` against a live VM
+  disk's ext4 *before* `zfs set volsize`, where reversing the order truncates the
+  filesystem; and `sparse 1` governs only future disk creation, doing nothing about 203G
+  already reserved. Clearing the reservation needs no filesystem operation, no downtime,
+  and reverses in one command. Verified with the same three checks as the original
+  2026-07-25 migration — Qdrant `200` on 6333, n8n `200` on 5678, Postgres accepting TCP on
+  5432, VM103 running — captured both before and after so the comparison meant something.
+  The trade-off was taken knowingly: the reservation was what guaranteed docker-stack's
+  disk couldn't be starved, so that became a monitoring concern and a new P2 item for a
+  Grafana alert rule. (The plan asserted grafana "has no dashboards built yet" — stale; the
+  "N5 Pro Host Overview" dashboard was built 2026-07-25 and already carries a pool usage
+  panel, so only the alert rule is missing.)
+  **Phase 2 — and here the plan's premise turned out to be simply false.** It called for
+  setting `OLLAMA_MAX_LOADED_MODELS` and `OLLAMA_NUM_PARALLEL`, which it said were "not set
+  and run at default". Checking the live process first — per the house rule, and it earned
+  its keep — showed **both were already explicitly set**, and that the playbook's record of
+  the override block was stale in three separate ways: 8 variables documented against 11
+  live, `OLLAMA_CONTEXT_LENGTH=12400` documented against `16384` live, and the three
+  concurrency knobs missing from the doc entirely. Live values were `NUM_PARALLEL=1` —
+  *tighter* than the 2 the plan proposed, so following the plan verbatim would have
+  **loosened** the very thing it set out to bound — and `MAX_LOADED_MODELS=2`. Only the
+  second was worth changing: with `KEEP_ALIVE=-1` it let two models sit pinned
+  indefinitely, observed live at 8.8 GB + 3.2 GB = 12 GB held with both idle. Set to `1`
+  after checking with Dave; `NUM_PARALLEL` deliberately left at 1, since doubling KV
+  allocation on a bandwidth-bound iGPU works against the goal. Verified against the live
+  process rather than the file (the playbook records a past silent failure where an edit
+  never reached the process), and the backup copy was moved out of the `.d` directory so it
+  couldn't become the next such trap. Eviction confirmed empirically — loaded a second
+  model, watched the first drop out of `ollama ps`. Throughput unchanged at 10.96 / 10.93.
+  **Phase 3 — prepared, not executed.** The UMA A/B needs BIOS access and a full host
+  reboot, so it stays with Dave. What changed is that it is now answerable: the Baseline
+  figures **are** the A-side at 32GB, and the playbook and actions.md both carry the exact
+  B-side procedure plus a decision rule fixed in advance — **if the 12B stays above ~10.4
+  tok/s at 24GB (<5% cost), keep 24GB**; otherwise close as "measured, keeping 32GB". Also
+  struck the false claim that justified two prior deferrals: both the playbook and
+  actions.md stated there was "no measured inference benefit over 24GB", when **24GB has
+  never been run at all**.
+  Two things were deliberately not done. The `zfs destroy` of `AIVault/postgres` and
+  `AIVault/models` was verified safe (both empty, no snapshots, no guest references) but
+  Dave chose to leave them; and `NUM_PARALLEL` was left alone as above.
+  Updated [playbooks/gpu-passthrough-ollama-vulkan.md](playbooks/gpu-passthrough-ollama-vulkan.md)
+  (new Baseline section, live override block, corrected UMA claim, A/B procedure, stale
+  12400/2GB references fixed), [storage/aivault.md](storage/aivault.md),
+  [containers/ollama.md](containers/ollama.md) (model inventory, inference performance,
+  concurrency bounds), and [actions.md](actions.md) (four items resolved, the UMA item
+  corrected and re-scoped, one new P2 for the Grafana alert, the P4 dataset note updated).
+
 ## 2026-07-28 (3)
 * **Reset the AdGuard admin password on [CT109](containers/adguard.md), and corrected two
   wrong assumptions on the way there — one of them Dave's, one that would have been mine.**

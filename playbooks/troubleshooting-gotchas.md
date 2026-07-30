@@ -32,6 +32,10 @@ matches, reach here before first principles.
   *upstream* is flaky, not AdGuard down — this bit once with a dead Quad9 DoH endpoint as
   the sole upstream. Debug: `dig @192.168.0.20 <domain>`, then
   `pct exec 109 -- journalctl -u AdGuardHome | grep "exchange fa"`.
+* **Full-fleet shutdown/reboot kills LAN DNS (AdGuard, CT109)** — remote sessions and
+  anything resolving names will fail mid-maintenance; sequence AdGuard last down / first
+  up. Details:
+  [gpu-passthrough-ollama-vulkan.md](gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
 * **A `.lan` domain 403s instead of loading in the browser.** Check the backend app for its
   own Host-header whitelist (e.g. SABnzbd's `host_whitelist` in `sabnzbd.ini`) — arriving
   via [Caddy](/playbooks/reverse-proxy-caddy.md) changes the `Host:` header to the `.lan`
