@@ -4,17 +4,23 @@ title: AIVault
 description: 512GB WD NVMe holding the Ollama model store and (as of 2026-07-25) docker-stack's Postgres/Qdrant data.
 resource: /AIVault
 tags: [zfs, storage, ai, ollama]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-07-29T00:00:00Z
 ---
 
 512GB WD NVMe (472G usable). Mountpoint `/AIVault`. Registered as Proxmox ZFS storage (disk
-images + container rootfs). **294G used / 164G free as of 2026-07-26** — was 90.6G used /
-381G free the previous day, see below for why that jumped ~200G overnight without anyone
-storing 200G of anything.
+images + container rootfs). **79.8G used / 378G free as of 2026-07-30**, after the
+overnight model swap (24B pulled at Q4_K_M, its Q8_0 removed — see
+[the ollama page](/containers/ollama.md)). On 2026-07-29 it read 89.8G used / 368G free,
+after the `refreservation` on `vm-103-disk-0` was dropped — see below. Between 2026-07-26
+and that change it read 294G used / 164G free, of which 203G was reservation rather than
+data.
 
-The Ollama model store at `AIVault/ollama-models` (90.6G, the pool's only real consumer),
+The Ollama model store at `AIVault/ollama-models` (79.8G as of 2026-07-30, was 89.7G
+before the Q4/Q8 swap; the pool's only real consumer),
 bind-mounted into [ollama (CT102)](/containers/ollama.md) at `/mnt/models`
-(`OLLAMA_MODELS=/mnt/models`), is confirmed live.
+(`OLLAMA_MODELS=/mnt/models`), is confirmed live. Its contents were inventoried for the
+first time on 2026-07-29 — seven models, all genuinely in use, no orphaned bulk; the
+breakdown is on [the ollama page](/containers/ollama.md).
 
 # Postgres/Qdrant migrated here 2026-07-25
 
@@ -41,30 +47,58 @@ existing database and skipped re-initialization, reached "ready to accept connec
 Qdrant came up cleanly on 6333/6334; n8n (which depends on Postgres) answered `200`
 throughout. Two small orphaned datasets, `AIVault/postgres` and `AIVault/models` (96K
 each, leftover from whatever the original unwired plan was), are now genuinely obsolete —
-low-priority cleanup candidates whenever convenient.
+low-priority cleanup candidates whenever convenient. Re-verified empty 2026-07-29 and
+deliberately left in place; see below.
 
-# The pool is 62% full but nearly all of it is a reservation (found 2026-07-26)
+# The 203G reservation — found 2026-07-26, released 2026-07-29
 
-The ~200G jump between 2026-07-25 and 2026-07-26 is **not** data growth. `vm-103-disk-0`
-— the 200G disk wired into docker-stack during the migration above — is **thickly
+The ~200G jump between 2026-07-25 and 2026-07-26 was **not** data growth. `vm-103-disk-0`
+— the 200G disk wired into docker-stack during the migration above — was **thickly
 provisioned**, because the AIVault storage is declared `sparse 0` in
 `/etc/pve/storage.cfg`. Proxmox therefore set a `refreservation` equal to the full volume
-size the moment the disk was actually put to use:
+size the moment the disk was actually put to use, so 203G of the pool was spoken for to
+store 19.8M, and **AIVault's "164G free" was the real ceiling for Ollama models**.
 
-```
-zfs get refreservation,used,referenced,volsize AIVault/vm-103-disk-0
-refreservation  203G
-used            203G
-referenced      19.7M     # <-- actual data
-volsize         200G
+**Resolved 2026-07-29 by clearing the reservation on the existing zvol:**
+
+```bash
+zfs set refreservation=none AIVault/vm-103-disk-0
 ```
 
-So 203G of the pool is spoken for to store 19.7M. Nothing is broken and nothing is at
-risk — a reservation is exactly what guarantees the VM can't be starved of its disk — but
-it means **AIVault's "164G free" is the real ceiling for Ollama models**, and the pool
-will read as alarmingly full forever without this context. Flagged in
-[actions.md](/actions.md) as a decision (shrink the volume, or switch the storage to
-sparse) rather than fixed unilaterally, since either change affects a live VM disk.
+Before / after:
+
+| | refreservation | used | referenced | volsize |
+|---|---|---|---|---|
+| before | 203G | 203G | 19.8M | 200G |
+| after | none | 19.8M | 19.8M | 200G |
+
+Pool free space went **164G → 368G** in one command, with no downtime and no filesystem
+operation. This was chosen over the two options [actions.md](/actions.md) originally
+listed because both were worse: shrinking the volume requires `resize2fs` on the ext4
+filesystem *inside* a live VM disk **before** `zfs set volsize`, and getting the order
+wrong truncates the filesystem; and setting `sparse 1` in `/etc/pve/storage.cfg` only
+governs **future** disk creation, doing nothing about the 203G already reserved. Clearing
+`refreservation` retroactively thin-provisions the existing zvol and is reversible in one
+command (`zfs set refreservation=203G AIVault/vm-103-disk-0`).
+
+Verified after the change with the same three checks used for the original migration:
+Qdrant `200` on 6333 (`/collections` answering), n8n `200` on 5678, Postgres accepting TCP
+on 5432, VM103 still `running`.
+
+**The trade-off, stated plainly:** the reservation was what guaranteed docker-stack's disk
+could not be starved. Without it, the VM's writes could fail if AIVault fills. Against
+19.8M of actual use on a 200G volume — and the pool's only real consumer being a model
+store that is now nowhere near the ceiling — that risk is remote, but it is no longer
+*structurally* impossible. It is the reason to add a pool-usage alert on
+[grafana (CT110)](/containers/grafana.md), which already scrapes the host via
+`pve-exporter` and already has the "N5 Pro Host Overview" dashboard carrying a storage
+pool usage panel; the alert rule itself is not yet built and is tracked in
+[actions.md](/actions.md).
+
+Two small orphaned datasets, `AIVault/postgres` and `AIVault/models` (96K each), were
+re-verified as genuinely empty on 2026-07-29 — no contents beyond `.`/`..`, no snapshots,
+referenced by no guest config in `/etc/pve/lxc/` or `/etc/pve/qemu-server/`. Dave chose to
+leave them in place rather than destroy them; they remain inert and cost 192K total.
 
 **That ceiling stops being theoretical if the MoE model switch happens (noted
 2026-07-28).** The MoE models worth running on this hardware are 36GB, 43GB, 49.6GB and
@@ -82,3 +116,4 @@ unprivileged-container mapped UID, never from inside the container — see
 # Citations
 
 [1] n5-pro-homelab Claude Skill — SKILL.md, references/proxmox-storage.md, references/gpu-ollama.md (Dave's claude.ai account, last updated 2026-07-19)
+[2] direct host review 2026-07-29 — `zfs set refreservation=none`, `zfs list -r AIVault`, `zfs get` before/after, docker-stack service checks (reservation release and verification)

@@ -3,7 +3,7 @@ type: Reference
 title: Open Actions
 description: Prioritised list of known issues and follow-ups surfaced during documentation review, not yet actioned.
 tags: [todo, actions, homelab]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-07-30T00:00:00Z
 ---
 
 # Open Actions
@@ -13,6 +13,113 @@ separate from the reference docs so nothing gets lost. Update this when an item 
 or a new one is found — don't let findings just live in [log.md](log.md) history.
 
 ## Resolved
+
+* ~~**CharacterTavern search failed & `cl-helper` plugin not detected error.**~~
+  **Fixed 2026-07-29.** Root cause: `apiRequest` in Character Library prepends `/api` automatically; passing `/api/plugins/cl-helper/health` to `apiRequest` produced a double-prefix `/api/api/plugins/cl-helper/health` (404 Not Found), causing the UI to report `cl-helper plugin not detected`. Restored `/plugins/cl-helper` endpoint paths for `apiRequest` calls, stripped `accept-encoding` in `corsProxy.js`, and restarted `sillytavern.service`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions--server-plugins).
+
+* ~~**Installed cl-helper server plugin for Character Library in CT120.**~~
+  **Completed 2026-07-29.** Installed `cl-helper` plugin to `/opt/sillytavern/app/plugins/cl-helper` from `SillyTavern-CharacterLibrary/extras/cl-helper`. Verified `enableServerPlugins: true` in `config.yaml`, set ownership to `sillytavern:sillytavern`, and restarted `sillytavern.service`. Log output confirmed `[cl-helper] Character Library helper plugin loaded`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions--server-plugins).
+
+* ~~**Installed SillyTavern-CharacterLibrary extension in CT120.**~~
+  **Completed 2026-07-29.** Cloned [SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary) into `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary` via SSH / `pct exec 120`, set ownership to `sillytavern:sillytavern`, and restarted `sillytavern.service`. Documented on [sillytavern (CT120)](/containers/sillytavern.md#installed-extensions--server-plugins).
+
+* ~~**SillyTavern character search (CharacterTavern, PygmalionAI, WyvernAI) fails with CORS proxy error.**~~
+  **Fixed / Documented 2026-07-29.** External character hub searches require SillyTavern's built-in CORS proxy to bypass browser cross-origin restrictions. `enableCorsProxy` defaults to `false` in `config.yaml`. Resolved by setting `enableCorsProxy: true` in `/opt/sillytavern/app/config.yaml` and restarting `sillytavern.service` (`pct exec 120 -- systemctl restart sillytavern.service`). Documented on [sillytavern (CT120)](/containers/sillytavern.md#character-hub--cors-proxy-configuration).
+
+* ~~**`ttm.pages_limit` has never been set on this host, and GTT is sitting at the kernel
+  default of 31.2 GiB.**~~ **Fixed 2026-07-29**, the same evening it went in as a P2. Set
+  `ttm.pages_limit=18874368 ttm.page_pool_size=18874368` (72 GiB) in
+  `GRUB_CMDLINE_LINUX_DEFAULT`, `update-grub`, full-fleet reboot ~22:48 (pre-change backup
+  at `/root/grub.bak-20260729`). Verified the way the item itself demanded — read back, not
+  trusted: `/proc/cmdline` carries the parameters,
+  `/sys/module/ttm/parameters/pages_limit` = 18874368, `mem_info_gtt_total` = 77309411328
+  (72 GiB), and Ollama's journal now reports `total="104.0 GiB"` — the iGPU's addressable
+  pool went **63.2 → 104 GiB**. The post-reboot 7-model benchmark (label `gtt72`) came back
+  flat — worst −2.1%, inside run-to-run noise — so the raise is pure capacity, kept per the
+  rule fixed in advance (a >3% drop on any model would have meant something *else* changed
+  in the reboot). **One incident:** the guest-shutdown loop for the first reboot attempt
+  took down AdGuard (CT109) — the LAN's only DNS — and severed the session driving the
+  change mid-task; the reboot completed on a second attempt with an IP-only watcher. The
+  hazard is now documented in the playbook and as a standing bullet in
+  [troubleshooting-gotchas](/playbooks/troubleshooting-gotchas.md) (sequence AdGuard last
+  down / first up). See
+  [UMA and GTT](/playbooks/gpu-passthrough-ollama-vulkan.md#uma-and-gtt--the-memory-pool-and-how-its-split).
+
+* ~~**Two of the seven models are slow dense models that the MoEs already beat, and the 24B
+  is a `Q8_0` costing ~2× throughput.**~~ **Decided and executed 2026-07-30** (early hours,
+  same session as the GTT raise). Option (a) taken and measured rather than predicted:
+  `Dolphin-Mistral-24B` pulled at `Q4_K_M` (14 GB) and benchmarked against the Q8 on
+  identical post-`gtt72` config — **5.63 vs 3.22 tok/s, 1.75×** (the item predicted ~2×
+  from the byte ratio; the dense 80÷GB rule holds, product 79). Dave chose to **keep the
+  Q4 and remove the Q8** — executed, model store **103G → 79.8G**. Option (b) — dropping
+  or demoting the two slow dense families — was put to Dave alongside the same table and
+  he **explicitly chose to keep everything else**: a recorded decision, not a deferral.
+  Inventory updated on
+  [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29).
+
+* ~~**AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**~~
+  **Fixed 2026-07-29.** `vm-103-disk-0` (docker-stack's 200G data disk) was thickly
+  provisioned because the AIVault storage is `sparse 0` in `/etc/pve/storage.cfg`, so ZFS
+  held a `refreservation` of 203G against `referenced` of 19.8M — capping the Ollama model
+  store at 164G and making the pool read as nearly full.
+  Resolved with a **fourth option none of the three originally listed here covered**:
+  `zfs set refreservation=none AIVault/vm-103-disk-0`. Pool free space went **164G → 368G**
+  in one command. This beat the two options that would have reclaimed space: (b) shrinking
+  the volume requires `resize2fs` on the ext4 filesystem *inside* a live VM disk **before**
+  `zfs set volsize`, and reversing that order truncates the filesystem; (c) `sparse 1`
+  governs only **future** disk creation and would have done nothing about the 203G already
+  reserved. Clearing the reservation retroactively thin-provisions the existing zvol — no
+  filesystem operation, no VM downtime, reversible in one command
+  (`zfs set refreservation=203G`).
+  Verified with the same three checks used for the original 2026-07-25 migration: Qdrant
+  `200` on 6333 with `/collections` answering, n8n `200` on 5678, Postgres accepting TCP on
+  5432, VM103 still `running`. Trade-off accepted knowingly — the reservation was what
+  guaranteed the VM couldn't be starved; that's now a monitoring concern, tracked as a new
+  P2 item for a Grafana alert. See
+  [AIVault](/storage/aivault.md#the-203g-reservation--found-2026-07-26-released-2026-07-29).
+
+* ~~**Ollama could pin two models in memory indefinitely.**~~ **Bounded 2026-07-29.**
+  Found while executing the local-AI efficiency plan, which had assumed
+  `OLLAMA_MAX_LOADED_MODELS` and `OLLAMA_NUM_PARALLEL` were unset and running at Ollama's
+  defaults. **They were not** — both were explicitly set, and the GPU playbook's record of
+  the override block was stale in three ways: it listed 8 variables where the live process
+  had 11, gave `OLLAMA_CONTEXT_LENGTH=12400` where the live value is `16384`, and omitted
+  `OLLAMA_NUM_PARALLEL`, `OLLAMA_MAX_QUEUE` and `OLLAMA_MAX_LOADED_MODELS` entirely.
+  Live values were `NUM_PARALLEL=1` (*tighter* than the plan's proposed 2) and
+  `MAX_LOADED_MODELS=2`. Combined with `KEEP_ALIVE=-1` the latter let two models sit pinned
+  indefinitely — observed live at 8.8 GB + 3.2 GB = 12 GB held with both idle. Set
+  `MAX_LOADED_MODELS=1`; `NUM_PARALLEL` deliberately left at 1 rather than raised, since
+  doubling KV allocation on a bandwidth-bound iGPU works against the goal. Verified against
+  the **live process** (`systemctl show ollama -p Environment`), not the file — the playbook
+  records a past silent failure where an edit never reached the process. Eviction confirmed
+  by loading a second model and seeing the first drop out of `ollama ps`; single-stream
+  throughput unchanged (10.96/10.93 tok/s after, vs 10.94/10.93/10.94 before). Playbook
+  block replaced with the live contents. See
+  [ollama (CT102)](/containers/ollama.md#concurrency-bounds).
+
+* ~~**The bundle's only inference measurement was `~3.2 tok/s`, unqualified.**~~
+  **Replaced 2026-07-29** with a qualified
+  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline) table — **six models**,
+  full config and reproduction instructions (three runs each for the first two; single runs
+  for the four added later).
+  **Note two mistakes made and corrected the same day, in opposite directions.** The first
+  version of this entry claimed the old figure was "wrong by ~3.4×" because it didn't match
+  the 12B (10.94 tok/s). The second claimed it was "correct all along" because the 24B Q8
+  returned 3.26 tok/s. **Both inferred a model from a single matching number, and neither
+  is supportable.** What the figure genuinely constrains is **~25 GB of dense weights** —
+  satisfied by a 24B at Q8 *or* a ~45B at Q4, with nothing on record distinguishing them.
+  Recorded as "unattributed, implies ~25 GB dense". An unqualified measurement can be
+  wrongly *dismissed* just as easily as wrongly *trusted*, and both happened to this one
+  within a few hours.
+
+* ~~**The 90.6G Ollama model store had never been inventoried.**~~ **Inventoried
+  2026-07-29.** Only one model was documented anywhere in the bundle, leaving ~80G
+  unexplained and raising the possibility of duplicate or orphaned bulk against the then-164G
+  ceiling. It is fully accounted for: **seven models, ~94 GB nominal / 89.7G on disk, no
+  orphaned blobs, nothing to reclaim.** Full table on
+  [ollama (CT102)](/containers/ollama.md#model-inventory-2026-07-29). Noted but not acted
+  on: four of the seven (76 GB) are above the 7–14B q4 range the playbook calls the
+  pleasant range on this hardware.
 
 * ~~**SSH from Dave's Mac to the host was broken, blocking all live-state verification.**~~
   **Fixed 2026-07-26.** `ssh root@192.168.0.10` returned `Permission denied
@@ -242,34 +349,51 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   Ethernet (simple, ~116 MB/s), or spend the complexity for roughly 2.5–3× on large media
   copies. Not started — deliberately, since it re-opens a design Dave previously closed.
 
-* **AIVault is 62% full, and ~200G of that is a reservation holding 19.7M of data.**
-  Found 2026-07-26 while checking pool headroom before adding Kokoro. `vm-103-disk-0`
-  (docker-stack's 200G data disk, wired in on 2026-07-25) is **thickly provisioned**
-  because the AIVault storage is `sparse 0` in `/etc/pve/storage.cfg`, so ZFS holds a
-  `refreservation` of 203G against `referenced` of 19.7M. Nothing is broken — the
-  reservation is what guarantees the VM can't be starved — but it permanently caps the
-  Ollama model store at the remaining **164G**, and makes the pool read as nearly full.
-  Decide between: (a) leave it, accepting 164G as the real ceiling; (b) shrink the volume
-  to something closer to actual need (Postgres+Qdrant are using 47M, so 200G is wildly
-  oversized) and reclaim ~150G+; (c) set the storage to `sparse 1` so future disks are
-  thin-provisioned. (b) and (c) both touch a live VM disk, so neither was done
-  unilaterally. See
-  [AIVault](/storage/aivault.md#the-pool-is-62-full-but-nearly-all-of-it-is-a-reservation-found-2026-07-26).
+* **The iGPU's BIOS UMA frame buffer is 32GB, above the documented 24GB "sweet spot".**
+  Checked while reconciling the RAM figure (2026-07-25): `dmesg | grep -i 'VRAM:'` shows
+  `VRAM: 32768M`, not the "2GB" the GPU playbook previously (and wrongly) said — someone
+  applied a BIOS change at some point without updating the doc. It costs every other guest
+  8GB of headroom versus the 24GB target.
+  **Correction 2026-07-29:** this item previously justified itself with "for no measured
+  inference benefit over 24GB". **That was never true and has been struck from both this
+  item and the playbook — 24GB has never been run.** The item had been deferred twice on
+  the strength of an assertion no measurement supported.
+  **The blocker is now removed:** a repeatable benchmark exists as of 2026-07-29 (six
+  models — see the playbook's
+  [Baseline](/playbooks/gpu-passthrough-ollama-vulkan.md#baseline)), and those figures
+  **are the A-side**, taken at 32GB.
+  **But the test itself has been re-scoped, because "32 vs 24" turns out to be the less
+  interesting question.** Two findings changed it. First, the "24GB sweet spot" reasoning
+  was built on fitting *a q4 30B dense model (~18GB)* into UMA — and the benchmark shows
+  that model class is not worth designing around here (the 18GB dense 27B runs at 4.28
+  tok/s; the 16GB MoE that *is* worth running fits comfortably either way). Second, UMA is
+  only half the memory story: the iGPU also draws on **GTT**, which is *borrowed* rather
+  than permanently stolen, and which had never been tuned on this host until 2026-07-29
+  (see the GTT entry under Resolved).
+  **The GTT half is now done — applied and measured 2026-07-29** (see Resolved): GTT was
+  raised 31.2 → 72 GiB at the bootloader, the addressable pool grew 63.2 → **104 GiB**, and
+  the full 7-model re-benchmark (label `gtt72`) came back flat — confirming GTT is a
+  capacity lever, not a speed one.
+  **What remains is the UMA half only, and it is the sole remaining item from the
+  2026-07-29 optimisation plan:** drop UMA 32GB → **16GB** in BIOS, returning 16GB
+  permanently to the fleet while the pool stays large (16 + 72 ≈ 88 GiB). Decision rule
+  fixed in advance, against the new A-side (the `gtt72` figures, not the pre-GTT
+  Baseline): **if `gemma-4-26B-A4B` — the model actually worth running — stays within ~10%
+  of 24.49 tok/s, i.e. above ~22.0, take the 16GB side.** The counterweight to price in:
+  UMA measures roughly **+11% faster than GTT** for equivalent capacity, so expect to pay
+  something. Blocked only on Dave being physically at the console for the BIOS trip.
+  Procedure and verification steps in
+  [The A/B worth running](/playbooks/gpu-passthrough-ollama-vulkan.md#the-ab-worth-running).
 
-* **The iGPU's BIOS UMA frame buffer is 32GB, above the documented 24GB "sweet spot" —
-  and that's the real explanation for the RAM dispute below, not an error.** Checked while
-  reconciling the RAM figure (2026-07-25): `dmesg | grep -i 'VRAM:'` shows `VRAM: 32768M`,
-  not the "2GB" the GPU playbook previously (and wrongly) said — someone applied a BIOS
-  change at some point without updating the doc. 32GB was already flagged in that same
-  playbook as "defensible but marginal past 24" *before* this was checked. Right now it's
-  costing every other guest 8GB of headroom versus the 24GB target, for no measured
-  inference benefit over 24GB (only a 30B-class model needs the extra 8GB, and the doc
-  says 30B is still "slow" regardless — 7–14B q4 is called the pleasant range). Decide:
-  dial it back to 24GB (reclaims 8GB for the rest of the fleet) or leave at 32GB if
-  there's a reason for the extra headroom not currently documented. **Asked 2026-07-25 —
-  Dave wants to revisit later, no BIOS change yet.** Requires a full host
-  reboot into BIOS — I can't do this remotely, needs Dave at the console. See
-  [GPU passthrough & Ollama on Vulkan](/playbooks/gpu-passthrough-ollama-vulkan.md#the-real-performance-lever-bios-uma-frame-buffer).
+* **AIVault has no pool-usage alert, and as of 2026-07-29 nothing structurally guarantees
+  docker-stack's disk can't be starved.** Introduced deliberately by dropping the 203G
+  `refreservation` on `vm-103-disk-0` (see Resolved). The risk is remote — 19.8M of actual
+  use against a 200G volume, on a pool measured at 368G free on 2026-07-29 (the model
+  swap later that night freed a further ~10G net) — but it is now a monitoring
+  responsibility rather than a ZFS guarantee. [grafana (CT110)](/containers/grafana.md)
+  already scrapes the host via `pve-exporter` and the "N5 Pro Host Overview" dashboard
+  already carries a storage pool usage panel; what's missing is an **alert rule** firing on
+  AIVault above ~85%. Small, and the natural pairing with the reservation change.
 
   **Reframed 2026-07-28 — the target should probably be 16GB, not 24GB, and the trade is
   now numeric.** External benchmarks on identical silicon put UMA-resident inference at
@@ -324,37 +448,26 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 ## P3 — open
 
-* **The GTT ceiling has never been checked, and the arithmetic says it's ~31 GiB — half
-  what the GPU playbook implies.** Raised 2026-07-28. The kernel's TTM `pages_limit`
-  defaults to **half of system RAM**; this host shows 62GB to the OS (96GB less the 32GB
-  UMA carve-out), giving **~31 GiB of GTT**. The passthrough playbook records Ollama
-  reporting `total="48.0 GiB"` as the success condition, but that's Ollama's own estimate
-  of what it thinks it can address, not the kernel's limit — so loads above ~31 GiB may be
-  failing for a reason nobody has looked at. One command settles it:
-  `cat /sys/class/drm/card1/device/mem_info_gtt_total` (note **card1**, not card0). If it
-  needs raising, `ttm.pages_limit=18874368 ttm.page_pool_size=18874368` gives 72GB — but
-  **check which bootloader is live first** (`proxmox-boot-tool status`): on ZFS root the
-  live path is `/etc/kernel/cmdline` + `proxmox-boot-tool refresh`, and editing
-  `/etc/default/grub` does nothing at all. The source author lost a week to exactly this
-  class of mistake on Unraid. `amdgpu.gttsize` is deprecated (warns, then ignores you) and
-  `amdttm.pages_limit` is for the out-of-tree DKMS module — neither is the right knob.
-  Batch the reboot with the BIOS UMA decision above. See
-  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-gtt-ceiling--likely-capped-at-31-gib-here),
-  and **[AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-0--baseline-and-the-five-unknowns)**
-  — the check is step 1 there, and its outcome is an explicit decision gate: if GTT comes
-  back at ~46 GiB or more, the ~31 GiB arithmetic is wrong and the playbook needs correcting
-  rather than acting on.
+* **`/opt/AdGuardHome` on [CT109](/containers/adguard.md) is mode `0755`, and it holds the
+  admin bcrypt hash plus eleven backup copies of it.** Surfaced 2026-07-28 during the
+  password reset — AdGuard logs it itself on every start: `permcheck: warning: found
+  unexpected permissions type=directory path=/opt/AdGuardHome perm=0755 want=0700`.
+  Pre-existing, not introduced by that work. Practical risk today is low: CT109 is a
+  single-purpose unprivileged LXC with no other human accounts, so "world-readable" means
+  little in practice — this is filed for tidiness and because AdGuard has an opinion, not
+  because it's believed to be exposed. Fix is `pct exec 109 -- chmod 0700
+  /opt/AdGuardHome`; verify the service still starts, since permcheck is the thing that
+  cares. Bundle it with the cleanup below.
 
-* **[Open WebUI](/containers/openwebui.md) has never been probed for authentication from
-  off-box.** Raised 2026-07-28. The source author found their own Open WebUI returning
-  **200 with no auth at all** when probed properly, having previously concluded it was fine
-  because no login prompt appeared in their browser — which proves nothing, since the
-  browser carries session state. This host has CT106 on `192.168.0.17:8080` with **no
-  active Proxmox firewall anywhere** (confirmed 2026-07-25), so the LAN boundary is the
-  entire security model and an unauthenticated service is open to every device on it. Probe
-  from a device with no session — `curl -sS -o /dev/null -w '%{http_code}' http://192.168.0.17:8080/`
-  and check what an unauthenticated API call returns — rather than assuming. Cheap to
-  disprove; worth doing.
+* **Eleven `AdGuardHome.yaml.bak-*` files have accumulated in `/opt/AdGuardHome`**, one per
+  config-editing session since 2026-07-25 (`bak-20260725`, `-20260725b`, `bak2-20260726`,
+  `-20260726`, `-20260726-abs`, `-20260726-coder`, `-20260728`, `-20260728-pwd`, …). The
+  backup-first habit is right and shouldn't change; the naming is what's drifted, with
+  three mutually inconsistent suffix schemes for the same day. Keep the newest two, bin the
+  rest, and settle on one scheme. Note each of these contains a **valid historical bcrypt
+  hash** — the pre-2026-07-28 ones now hold a superseded password, but they should still be
+  removed rather than left readable, which is why this and the item above want doing in one
+  pass.
 
 * **`192.168.0.25` sits inside the documented static range and belongs to Dave's Mac
   mini** — identified 2026-07-26, downgraded from "unidentified device" but not closed.
@@ -494,6 +607,11 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   `AIVault/models` (96K each) were leftovers from the original unwired disk plan, now
   superseded by the real bind-mount migration below. Low-priority cleanup, whenever
   convenient: `zfs destroy AIVault/postgres AIVault/models`.
+  **Re-verified 2026-07-29** ahead of the local-AI efficiency work: both are genuinely
+  empty (nothing beyond `.`/`..`), have no snapshots, and are referenced by no guest config
+  in `/etc/pve/lxc/` or `/etc/pve/qemu-server/` — so the destroy is safe whenever wanted.
+  **Dave chose to leave them in place** rather than destroy them; they cost 192K total and
+  are inert. Staying open as a standing note, not a pending task.
 
 * **Two `.old-20260725` backup copies from the Postgres/Qdrant migration are still on
   docker-stack's root disk** (`/data/postgres.old-20260725`, `/data/qdrant.old-20260725`

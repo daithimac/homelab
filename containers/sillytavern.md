@@ -41,21 +41,30 @@ Connects to [ollama (CT102)](ollama.md) directly over the network
 * Chat: `hf.co/mradermacher/Moonlit-Mirage-12B-i1-GGUF:latest`
 * Embeddings: `mxbai-embed-large`
 
-**The chat model is a 12B *dense* model, which is the worst shape for this hardware
-(noted 2026-07-28).** Generation speed on the 890M is set by bytes read per token, not
-parameter count — external benchmarks on identical silicon measured a 12B dense model at
-**10.6 t/s** against **21.6 t/s** for a 35B **MoE** with ~3B active, i.e. the far larger
-model is twice as fast. Swapping this for a comparable MoE is the cheapest available
-speed-up on the whole box and needs nothing but a model pull. See
-[Local LLM daily driver](/playbooks/local-llm-daily-driver.md). Note the swap is a
-judgement call rather than a pure win here: this is a roleplay-tuned merge, and
-equivalents in MoE form need finding rather than assuming.
+# Character Hub & CORS Proxy Configuration
 
-Two SillyTavern-specific gotchas from the same source, both backend-independent:
-**settings are read once at page load** (an open tab overwrites new values on its next
-save — hard-refresh every tab after changing anything), and **temp 0.65 caused measurable
-mode collapse** where temp 1.0 did not. See
-[Frontend gotchas](/playbooks/local-llm-daily-driver.md#frontend-gotchas).
+When searching or downloading characters from third-party hubs (such as CharacterTavern, PygmalionAI, or WyvernAI), client browser requests are subject to browser CORS policies. SillyTavern includes an internal Node.js CORS proxy to handle these requests, but it is disabled by default (`enableCorsProxy: false`).
+
+If searching character hubs fails with the error message:
+`"Search failed: CORS proxy is disabled. Set enableCorsProxy: true in SillyTavern's config.yaml and restart the server"`
+
+### Resolution
+
+1. Edit `/opt/sillytavern/app/config.yaml` inside CT120 (or from the Proxmox host via `pct exec 120 -- nano /opt/sillytavern/app/config.yaml`):
+   ```yaml
+   enableCorsProxy: true
+   ```
+2. Restart the SillyTavern service:
+   ```bash
+   pct exec 120 -- systemctl restart sillytavern.service
+   ```
+
+# Installed Extensions & Server Plugins
+
+Third-party frontend extensions live in `/opt/sillytavern/app/public/scripts/extensions/third-party/` and server plugins live in `/opt/sillytavern/app/plugins/` (with `enableServerPlugins: true` in `config.yaml`), owned by `sillytavern:sillytavern`:
+
+* **[SillyTavern-CharacterLibrary](https://github.com/Sillyanonymous/SillyTavern-CharacterLibrary)** (Installed 2026-07-29) — Cloned to `/opt/sillytavern/app/public/scripts/extensions/third-party/SillyTavern-CharacterLibrary`. Provides an in-app character browser and manager.
+* **cl-helper Server Plugin** (Installed 2026-07-29) — Copied from `SillyTavern-CharacterLibrary/extras/cl-helper` to `/opt/sillytavern/app/plugins/cl-helper`. Enables session proxying, authentication flows, and disk-cached avatar/gallery thumbnails. (Fixed double-prefix `/api/api/plugins/cl-helper` health check pathing, pre-populated `_proxyOrigins`, and stripped `accept-encoding` from `corsProxy.js`).
 
 # Why CT120, not CT111
 
