@@ -395,6 +395,57 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   already carries a storage pool usage panel; what's missing is an **alert rule** firing on
   AIVault above ~85%. Small, and the natural pairing with the reservation change.
 
+  **Reframed 2026-07-28 — the target should probably be 16GB, not 24GB, and the trade is
+  now numeric.** External benchmarks on identical silicon put UMA-resident inference at
+  only **~+11%** over GTT (21.33 vs 19.18 t/s on a 35B MoE), and argue for **UMA small,
+  GTT large** on the principle that UMA is permanently stolen from the system while GTT is
+  borrowed and given back. So today's 32GB buys ~11% on whatever fits inside it and charges
+  every other guest 8GB permanently — a worse trade here than for the source author, who
+  runs one Immich instance alongside rather than fourteen guests plus NAS and DNS duty.
+  A second-order gain makes it more attractive than when this was parked: dropping to 16GB
+  raises OS-visible RAM to 80GB, which lifts the **default** GTT ceiling from ~31 to ~40
+  GiB before any kernel parameter is set. Batch this with the `ttm.pages_limit` item below
+  — both need the same host reboot. See
+  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-uma-trade-now-quantified).
+
+* **Inference is almost certainly running the wrong *shape* of model, and ~7× is on the
+  table for the cost of a model pull.** Raised 2026-07-28 from an external write-up by
+  another owner of the same silicon. The ~3.2 tok/s recorded in the GPU playbook was
+  attributed to DDR5 bandwidth being "inherent, not a misconfig" — bandwidth-bound is
+  right, but bytes-per-token was treated as fixed when it's the one variable fully under
+  our control. 3.2 tok/s is precisely what the bandwidth model predicts for a **~30B dense
+  q4** model (~18 GB/token ÷ ~60 GB/s), so the passthrough chain is healthy; a ~30B **MoE**
+  with ~3B active reads ~2 GB/token and measured **21.6 t/s** on identical hardware. Decide
+  whether to move the daily driver to MoE — it needs no reboot and no config change beyond
+  the pull, but it does mean re-picking models and re-testing whatever
+  [openwebui](/containers/openwebui.md) and [sillytavern](/containers/sillytavern.md) are
+  currently pointed at. **One instance is already confirmed from the bundle rather than
+  inferred:** CT120's configured chat model is `Moonlit-Mirage-12B-i1-GGUF`, a 12B **dense**
+  model — precisely the shape the source author used as their dense control and measured at
+  10.6 t/s against 21.6 for a 35B MoE. Finding a roleplay-tuned MoE equivalent is the
+  judgement call there, not the speed argument. **Procedure:**
+  [AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-2--model-shape-the-main-event),
+  which sizes the candidates against the GTT ceiling and reuses the Phase 0 benchmark so the
+  before/after numbers are comparable. Note the AIVault ceiling item above becomes a blocker if this
+  happens: MoE models are 36–59GB each and only 164G is free. See
+  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#the-one-law-bytes-per-token-not-parameter-count).
+
+* **Nothing stops an inference OOM from hard-locking the entire host, and ZFS ARC is
+  competing for the same RAM.** Raised 2026-07-28. On unified memory a GPU OOM takes the
+  **whole machine** down, not just the guest — which here means the NAS, *all* LAN DNS via
+  [AdGuard](/containers/adguard.md), Home Assistant and the other ten guests at once. Three
+  things compound it: [CT102](/containers/ollama.md) has **no cgroup memory limit** (needs
+  confirming, but nothing in the bundle sets one); `OLLAMA_KEEP_ALIVE=-1` pins models in
+  RAM indefinitely; and ARC across **three** pools expands into the same RAM the iGPU
+  borrows as GTT — the source author had to cap `zfs_arc_max` from 19.2 to 8 GiB just to
+  load one large model, with only a single pool. Decide: set a memory limit on CT102 (cheap
+  insurance, converts a host lock into one dead container), and whether `KEEP_ALIVE=-1`
+  should become a finite TTL. Worth doing **before** any experiment with larger models, not
+  after. See
+  [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number),
+  and **[AI optimisation runbook](/playbooks/ai-optimisation-runbook.md#phase-1--guardrail-before-pulling-anything-larger)**
+  for the sizing and the commands.
+
 ## P3 — open
 
 * **`/opt/AdGuardHome` on [CT109](/containers/adguard.md) is mode `0755`, and it holds the
@@ -458,6 +509,27 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   [Piper](/playbooks/epub-to-audiobook.md#piper--the-fastest-local-option).
 
 ## P4 — housekeeping
+
+* **Four cheap, untested inference levers, none of which need a reboot.** Raised
+  2026-07-28, all externally measured on identical silicon, none tried here.
+  * **CPU governor / platform power profile** — ranked the *single biggest* untried lever
+    by the source author: **+36% generation, +120% prefill**, and explicitly a different
+    knob from GPU perf-mode (which gave +1%, noise). It moves the memory controller clock,
+    which is the actual bottleneck. Check with
+    `cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor` (Proxmox usually lands on
+    `powersave` under `amd_pstate`); test with `cpupower frequency-set -g performance`.
+    Instantly reversible — but note this host is also the NAS and only DNS server running
+    24/7, so *keeping* it is a power and thermal decision, not a free win.
+  * **Mesa version is unpinned** — the GPU playbook installs "Mesa 25.x" from
+    `bookworm-backports` without pinning, and **25.3+** carries Valve's RADV CU-mode/LDS
+    patches worth **+19.8% prefill**. Backports moves; check what actually landed.
+  * **Ollama build recency** — a stale `llama.cpp` measured **56% slower** on the same
+    model, and Ollama bundles its own copy.
+  * **Batch-size sweep** — RADV picks matmul tile sizes at hard thresholds, so prefill
+    falls off cliffs (llama.cpp #13765). `-b 256` took a 30B-A3B's prefill from 70 to 118
+    t/s elsewhere. Least accessible of the four through Ollama's interface.
+
+  All four in [Local LLM daily driver](/playbooks/local-llm-daily-driver.md#other-levers-ranked-by-their-measurements).
 
 * **The Thunderbolt link is running at MTU 1500 and has never been tuned.** Both ends are
   at the Ethernet default while the Linux side reports `maxmtu 65522`; jumbo frames are the

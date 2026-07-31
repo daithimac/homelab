@@ -100,6 +100,13 @@ re-verified as genuinely empty on 2026-07-29 — no contents beyond `.`/`..`, no
 referenced by no guest config in `/etc/pve/lxc/` or `/etc/pve/qemu-server/`. Dave chose to
 leave them in place rather than destroy them; they remain inert and cost 192K total.
 
+**That ceiling stops being theoretical if the MoE model switch happens (noted
+2026-07-28).** The MoE models worth running on this hardware are 36GB, 43GB, 49.6GB and
+59GB each — **two or three of them exhausts the 164G**, and another owner of the same box
+reported their weights directory going 15GB → 280GB in three weeks. Shrinking the
+oversized volume reclaims ~150G to store 19.7M of actual data. See
+[Local LLM daily driver](/playbooks/local-llm-daily-driver.md#model-store-growth).
+
 # Permissions
 
 Bind-mount ownership for `ollama-models` must be set on the **host** using the

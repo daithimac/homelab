@@ -13,6 +13,12 @@ working path here. This chain was fought end-to-end and every link matters. Symp
 send you here: `library=cpu`, `total_vram="0 B"`, `dropping integrated GPU`, or slow
 inference.
 
+**This page is about making the GPU work at all. For making it *fast*, see
+[Local LLM daily driver](local-llm-daily-driver.md)** — model shape (the single biggest
+lever, and one this page previously got wrong), the GTT ceiling that may be capping loads
+at ~31 GiB, the CPU governor, and the ZFS-ARC memory contention that can hard-lock the
+host.
+
 # Steps
 
 ### 1. Device passthrough (host: `/etc/pve/lxc/102.conf`)
@@ -69,6 +75,11 @@ su -s /bin/bash ollama -c 'vulkaninfo --summary'
 ```
 Win = a device `PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU`, `driverName = radv`,
 `AMD Radeon Graphics (RADV GFX1150)`, vendorID `0x1002`.
+
+**Which 25.x you land on matters, and this install is unpinned.** Mesa **25.3+** carries
+Valve's RADV CU-mode/LDS patches, externally measured at **+19.8% prefill** on this GPU
+family. Backports moves, so check what actually landed rather than assuming — add
+`driverInfo` to the `grep` above.
 
 ### 5. The flag Ollama needs to NOT drop the iGPU
 Even with Vulkan seeing the card, Ollama **deliberately drops integrated GPUs by
@@ -244,169 +255,53 @@ throughput. Details and the full model-inventory table:
 Both of these dwarf the UMA question below, which is expected to be a single-digit-percent
 difference either way.
 
+**Do not read that 48 GiB as the real ceiling.** It is Ollama's own estimate of what it
+believes it can address, not the kernel's limit. The TTM `pages_limit` default is **half
+of system RAM**, which on this host (62GB visible, after the 32GB UMA carve-out) works out
+to **~31 GiB** — so loads above that may fail regardless of what Ollama advertises.
+Unverified; check with `cat /sys/class/drm/card1/device/mem_info_gtt_total` and see
+[Local LLM daily driver](local-llm-daily-driver.md#the-gtt-ceiling--likely-capped-at-31-gib-here)
+for how to raise it (and why `/etc/default/grub` may be a dead file on this host).
+
 # Tuning notes
 
 * `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0` only matter once the GPU
-  backend is live (they did nothing on CPU). q8_0 halves KV cache, nearly lossless — but
-  it is a **memory** lever only. A/B tested 2026-07-29 against f16 (see below): measured
-  speed effect is ≈0%, so keep q8_0 for the freed memory headroom under the 16384 context,
-  not for any throughput gain.
-* `OLLAMA_KEEP_ALIVE=-1` pins models in memory (shows as `Forever` in `ollama ps` and a
-  giant duration in logs — normal). With q8 cache + 16384 ctx on a shared-DDR5 iGPU, watch
-  for memory pressure — it's the first suspect if loads crawl or OOM. This is why
-  `OLLAMA_MAX_LOADED_MODELS` matters: pinning is indefinite, so the model cap is the only
-  thing bounding total held memory.
-* Discovery may set a huge `default_num_ctx` (262144, confirmed in the logs 2026-07-29)
-  because it sees the full UMA+GTT pool. The explicit `OLLAMA_CONTEXT_LENGTH=16384`
-  overrides per-model; keep it set.
-* **CPU governor is already optimal and is not a lever here.** Confirmed 2026-07-29:
-  all 24 threads report `scaling_governor=performance` and
-  `energy_performance_preference=performance` under `amd-pstate-epp` with
-  `amd_pstate status=active`. There is no `/sys/firmware/acpi/platform_profile` on this
-  host. `/sys/class/platform-profile/` does exist but is empty (no registered devices) —
-  no platform-profile handler is bound, so there's no ACPI platform-profile knob to pull
-  either way; that interface is laptop firmware, not present on the N5 Pro under Proxmox.
-  Community guidance ranking governor/power-profile as the top lever for this CPU was
-  written against a machine that exposed it; here it is already done.
-* **GPU `power_dpm_force_performance_level` (auto vs high) tested 2026-07-29 — reverted,
-  not a lever.** Forced `card1` (Radeon 890M) from `auto` to `high` at runtime
-  (`/sys/class/drm/card1/device/power_dpm_force_performance_level`, verified read-back both
-  ways, no reboot needed) and ran the harness 3x per model against the
-  `baseline-uma32-gtt31-ctx16k-kvq8` numbers measured earlier the same day. gemma-4-26B-A4B
-  (MoE): baseline 24.82 tok/s vs dpm-high mean 24.96 tok/s (+0.56%). Moonlit-Mirage-12B
-  (dense): baseline 10.88 tok/s vs dpm-high mean 10.98 tok/s (+0.92%). **Decision rule,
-  fixed in advance:** both models >3% gain to keep `high` pinned; neither cleared it, so
-  reverted to `auto` (confirmed read-back `auto`); pinning clocks for a <1% swing has no
-  upside, and idle power is presumed (not measured) to be worse at `high`. The sub-1%
-  deltas on both a MoE and a dense
-  model corroborate the bandwidth-bound diagnosis in *UMA and GTT*, below: this iGPU is
-  starved on memory bandwidth, not compute, so GPU core clock/power-state tuning is not
-  worth pursuing further here.
-* **KV cache type (f16 vs q8_0) A/B'd 2026-07-29 — reverted to q8_0, not a speed lever.**
-  Backed up `override.conf` outside the drop-in dir (`/root/ollama-override.bak-task6`),
-  switched `OLLAMA_KV_CACHE_TYPE` q8_0 → f16, `daemon-reload` + restart, and verified the
-  **live process** (not the file) via `systemctl show ollama -p Environment` both before
-  and after — the drop-in directory must stay clean of stray files, a past incident there
-  silently broke env propagation. Ran the harness 3x per model against the
-  `baseline-uma32-gtt31-ctx16k-kvq8` numbers (gemma-4-26B-A4B, MoE, 24.82 tok/s;
-  Moonlit-Mirage-12B, dense, 10.88 tok/s). kv-f16 means: gemma-4-26B-A4B (MoE) 24.77 tok/s
-  (**-0.20%**), Moonlit-Mirage-12B (dense) 11.00 tok/s (**+1.10%** — but this sits inside
-  the 12B's own documented 1.2% run-to-run spread in the Baseline table, i.e. within noise
-  per the harness section's comparability warning). **Decision rule, fixed in advance:**
-  both models needed to gain more than 3% to keep f16 pinned; neither cleared it
-  (gemma-4-26B-A4B actually regressed slightly), so reverted to q8_0 — confirmed read-back
-  `OLLAMA_KV_CACHE_TYPE=q8_0` and `active` from the live process, drop-in directory clean,
-  backup removed. The same community writeup cited in [3] ran a dedicated KV A/B on this
-  model (f16 29.0 vs q8_0 29.0 at ctx 32K — a separate test from its 29.5 tok/s headline
-  figure) and reports the "~10% faster" folklore as contradicted by every published
-  measurement (-3% to 0%); q8_0's value here is the halved KV cache memory footprint, not
-  throughput. Final state: `OLLAMA_KV_CACHE_TYPE=q8_0`, service active.
-* **Software-currency check (Ollama + Mesa) 2026-07-29 — neither upgraded, both within
-  acceptable margin.** Installed Ollama **0.31.1**, latest GitHub release **v0.32.5**
-  (`api.github.com/repos/ollama/ollama/releases/latest`) — one minor version ahead of
-  installed. **Decision rule, fixed in advance:** upgrade only when the installed release
-  is two or more minor versions (or a major) behind — 0.31.1 vs v0.32.5 is one minor, so
-  skip; installer was not run and no snapshot was taken. Mesa: installed
-  **25.0.7-2~bpo12+1**, `apt-cache policy mesa-vulkan-drivers` candidate is the **same**
-  version. **Decision rule, fixed in advance:** upgrade only if a genuinely newer
-  backports version exists — binary, and it does not here, so Mesa 25.3+ stays out of
-  reach without pulling from trixie/testing, which is out of scope given the
-  glibc/libdrm risk to the working Vulkan chain. Revisit when bookworm-backports itself
-  ships ≥25.3, or if CT102 is ever rebuilt on trixie — not before; the +19.8% prefill
-  upside from [3] does not justify pulling toolchain libraries across a Debian release
-  boundary into the working Vulkan chain. Citation [3] measured a stale llama.cpp build
-  at 56% slower and Mesa 25.3+ at +19.8% prefill on the same silicon (Unraid/llama.cpp
-  stack, not this host) — neither figure was reproduced here since neither upgrade path
-  was actionable; recorded as a cross-reference only. No benchmarking run (nothing was
-  upgraded), no snapshot exists post-check (`pct listsnapshot 102` shows only `current`).
-  Final state: Ollama 0.31.1, Mesa 25.0.7-2~bpo12+1, both unchanged.
-
-# UMA and GTT — the memory pool, and how it's split
-
-Previously headed "the real performance lever: BIOS UMA frame buffer". That framing was
-wrong twice over and has been corrected: **model architecture is the real lever** (7.6×,
-see [above](#bytes-read-per-token-is-the-lever--which-means-moe-not-size)), and UMA is only
-half of the memory story.
-
-iGPU inference is **memory-bandwidth bound** on DDR5, so the ceiling is inherent, not a
-misconfig. More CPU cores don't help (bandwidth, not compute, is the limit).
-
-There are **two** pools the iGPU can draw on, and this doc previously only discussed one:
-
-* **UMA** — the BIOS frame buffer. **Permanently stolen** from the OS: the host sees 62Gi
-  of 96GB physical because 32GB is carved out before boot.
-* **GTT** — system RAM the GPU **borrows and gives back**. Governed by the kernel's TTM
-  `pages_limit`, not by BIOS.
-
-Live state as of 2026-07-29, after the GTT raise applied that evening (GTT was at the
-31.2 GiB kernel default — 8180431 pages, no `ttm.*` parameter ever set — until then):
-
-```bash
-cat /proc/cmdline                     # ...ro quiet ttm.pages_limit=18874368 ttm.page_pool_size=18874368
-cat /sys/module/ttm/parameters/pages_limit                     # 18874368 pages = 72 GiB
-cat /sys/class/drm/card1/device/mem_info_gtt_total             # 77309411328 = 72 GiB
-```
-
-So the iGPU addresses **32 GB UMA + 72 GiB GTT ≈ 104 GiB**, which is exactly what Ollama
-reports (`total="104.0 GiB" available="103.8 GiB"`; it was `total="63.2 GiB"` before the
-raise).
-
-**This applies the advice that had inverted what this doc was carrying.** The received
-wisdom for this exact chip (Ryzen AI 9 HX 370 / gfx1150 / Strix Point) is **small UMA,
-large GTT** — because UMA is permanently lost while GTT is only borrowed. The GTT half was
-applied 2026-07-29 at the bootloader — no BIOS trip needed, reversible by restoring the
-pre-change backup at `/root/grub.bak-20260729`:
-
-```
-GRUB_CMDLINE_LINUX_DEFAULT="quiet ttm.pages_limit=18874368 ttm.page_pool_size=18874368"
-```
-
-in `/etc/default/grub` (18874368 pages × 4KiB = 72GB), then `update-grub` (this host boots
-GRUB — root is LVM, no `/etc/kernel/cmdline`, `proxmox-boot-tool status` reports no
-proxmox-boot-uuids) and a full-fleet reboot. Note `amdgpu.gttsize` is deprecated on current
-kernels (warns, then ignores you), and `amdttm.pages_limit` is for the out-of-tree DKMS
-module. Verify by reading `mem_info_gtt_total` back, never by trusting the config.
-
-**Full-fleet shutdown kills LAN DNS.** Shutting every guest down for the reboot takes
-AdGuard (CT109 — the network's only DNS) down with the rest, so any remote or automated
-actor driving the maintenance loses name resolution mid-operation. That is exactly what
-severed the session running the 2026-07-29 change, mid-shutdown-loop. Sequence AdGuard
-last and expect the outage. On recovery it should come back **first** — it is `onboot=1`,
-so a plain reboot brings it up automatically; when starting guests manually, start CT109
-before anything else to minimise the outage window.
-
-The 72 GiB pool exceeding the host's visible 62Gi is normal — GTT is pageable, not
-reserved — but a load that actually approached the ~104 GiB ceiling would OOM the host,
-and on unified memory a GPU OOM hard-locks the machine (reported in [3] for this silicon;
-deliberately not reproduced here). The guards: CT102's cgroup limit
-(`memory: 49152` in `/etc/pve/lxc/102.conf`, confirmed before the reboot) turns a runaway
-load into one dead container instead of a dead host, and nothing in the store comes near
-the ceiling (largest model 25 GB).
-
-**GTT's value is capacity (larger models loadable), not speed — and the benchmark confirms
-it.** Full 7-model run after the raise (label `gtt72`, three runs each, same harness,
-prompt and config as Baseline):
-
-| Model | Baseline t/s | gtt72 t/s | Δ | Runs |
-|---|---|---|---|---|
-| `Qwen3.5-4B-...-Literotica-i1` | 23.54 | 23.43 | −0.4% | 23.18 / 23.46 / 23.66 (2.0% spread) |
-| `gemma-4-26B-A4B-...` (MoE) | 24.82 | 24.49 | −1.3% | 24.59 / 24.46 / 24.42 (0.7% spread) |
-| `Melody1437-26B-A4B-v2.0` (MoE) | 19.71 | 19.29 | −2.1% | 19.42 / 19.01 / 19.44 (2.2% spread) |
-| `Moonlit-Mirage-12B-i1` | 10.88 | 10.81 | −0.6% | 10.81 / 10.81 / 10.82 (0.1% spread) |
-| `Qwen3.6-27B-Fable-Fusion-711-...` | 4.28 | 4.23 | −1.2% | 4.24 / 4.22 / 4.23 (0.5% spread) |
-| `Dolphin-Mistral-24B-...` Q8_0 | 3.26 | 3.22 | −1.2% | 3.22 / 3.22 / 3.22 (0.0% spread) |
-| `MistralRP-Noromaid-...-7B` Q8_0 | 10.43 | 10.32 | −1.1% | 10.34 / 10.32 / 10.30 (0.4% spread) |
+  backend is live (they did nothing on CPU). q8_0 halves KV cache, nearly lossless — worth
+  it with the 12400 context.
+* `OLLAMA_KEEP_ALIVE=-1` pins models in memory (shows as a giant duration in logs —
+  normal). With q8 cache + 12400 ctx on a shared-DDR5 iGPU, watch for memory pressure —
+  it's the first suspect if loads crawl or OOM. **Stronger warning added 2026-07-28:** on
+  unified memory a GPU OOM can **hard-lock the whole host**, taking the NAS and all LAN
+  DNS with it, and ZFS ARC is competing for the same RAM the iGPU borrows as GTT. Pinning
+  indefinitely is the wrong default while ARC is also expanding, and CT102 has no memory
+  limit to backstop it. See
+  [Local LLM daily driver](local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number).
+* `OLLAMA_KV_CACHE_TYPE=q8_0` is a **memory** lever, not a speed one — externally measured
+  flat within noise (29.0 t/s either way) while halving the KV cache. The value is context
+  headroom. Both preconditions are already met here: `-fa on` (via
+  `OLLAMA_FLASH_ATTENTION=1`) and k/v matching, which this variable sets together.
+* Discovery may set a huge `default_num_ctx` (e.g. 262144) because it sees ~48GB. The
+  explicit `OLLAMA_CONTEXT_LENGTH=12400` overrides per-model; keep it set.
 
 **Decision rule, fixed in advance:** GTT kept regardless (its value is capacity), but a >3%
 drop on any model would have meant something *else* changed in the reboot and demanded
 investigation. Every model came in within 2.1% of Baseline, inside the run-to-run noise
 band. Final state: `ttm.pages_limit=18874368`, pool 104 GiB, throughput unchanged.
 
-The counterweight: UMA measures roughly **+11% faster than GTT** for the same capacity, so
-the *remaining* decision is the UMA half — whether to hand 16–24GB back to the fleet. That,
-not "32 vs 24", is the real question — see [actions.md](/actions.md).
+Measured generation was ~3.2 tok/s on shared memory — iGPU inference is
+**memory-bandwidth bound** on DDR5. More CPU cores don't help (bandwidth, not compute, is
+the limit).
 
-The BIOS steps themselves, if changing UMA:
+**The "so this is inherent, not a misconfig" conclusion that used to follow was wrong, and
+BIOS UMA is not "the one hardware lever" — corrected 2026-07-28.** Bandwidth-bound is
+right; treating bytes-per-token as fixed is not. ~3.2 tok/s is exactly what the bandwidth
+model predicts for a **~30B dense q4** model (~18 GB/token ÷ ~60 GB/s), so the chain is
+performing to spec — but a ~30B **MoE** with ~3B active reads ~2 GB/token and should run
+roughly **7× faster** on the same hardware. Model shape is the biggest lever here, and it
+costs a model pull rather than a reboot. See
+[Local LLM daily driver](local-llm-daily-driver.md#the-one-law-bytes-per-token-not-parameter-count).
+
+The BIOS UMA lever below is still real, but it is worth ~11%, not 7×:
 
 1. Shut down guests cleanly, reboot host, enter BIOS (`Del` or `F2`).
 2. Path is firmware-dependent: `Advanced → AMD CBS → NBIO Common Options → GFX
