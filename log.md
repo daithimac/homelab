@@ -1,5 +1,48 @@
 # Directory Update Log
 
+## 2026-07-31 (2)
+* **Picked the model for the librarian agent — `gpt-oss:20b` — and in the process found a
+  second blocker that invalidated part of the design written earlier the same day.**
+  Both fixes are in [n8n librarian agent](playbooks/n8n-librarian-agent.md).
+  **The model choice came from this bundle's own measurements rather than model-card
+  reputation.** The reference 13-model benchmark in
+  [Local LLM daily driver](playbooks/local-llm-daily-driver.md#what-the-models-actually-do)
+  was run on the same gfx1150 silicon and already contains a figure for gpt-oss-20B:
+  **28.7 t/s**, effectively tied with the fastest model tested and ahead of every Qwen MoE
+  in the table. At ~3.6B active out of 21B it satisfies the box's own
+  `A<n>B`-before-file-size rule, and at ~14GB it sits inside an envelope the store's
+  existing 18GB model already proves — so no cgroup work, no ARC cap, no GTT change.
+  `qwen3:30b-a3b` (21.6 t/s at Q4) is documented as the fallback for the one real risk:
+  gpt-oss ships natively in **MXFP4**, a newer quant whose Vulkan path is less travelled
+  than K-quants, so a throughput far below 28 t/s means swap rather than debug.
+  **`gpt-oss:120b` was considered and rejected on the record**, because it is now genuinely
+  reachable — 20.7 t/s measured at 59 GiB, against the 72 GiB GTT this host set on
+  2026-07-29 — and that makes it tempting rather than obviously wrong. It would leave
+  ~13 GiB of GTT for KV cache and everything else on a box where a GPU OOM hard-locks the
+  NAS, Home Assistant, Jellyfin and [AdGuard](containers/adguard.md), the LAN's only DNS;
+  the cgroup limit that risk calls for is still an open item. Cataloguing ebook metadata is
+  not the errand to spend that on.
+  **The blocker: `OLLAMA_CONTEXT_LENGTH=12400`, set globally on CT102** and noted only in
+  passing in the daily-driver playbook. The design as first written fed the agent a full
+  `calibre/list` dump — 20k+ tokens for a few hundred books, on top of a ~1,500-token system
+  prompt and ~800 of tool schemas. **Ollama truncates silently past the ceiling**, and what
+  falls out of a context window first is the top of the prompt: the cardinal rules. That
+  produces an autonomous agent holding every mutating tool and none of its constraints, at
+  03:00, with nobody watching — a correctness failure, not a performance one. Fixed two
+  ways: an n8n **Loop Over Items** around the agent so each iteration sees one book plus
+  ≤10 candidate records instead of the catalogue, and a per-request `num_ctx` of 32768
+  rather than a change to the global env, which openwebui and sillytavern also read. The
+  loop is the better agent design independently — small context improves rule adherence,
+  and one bad item now fails one iteration instead of poisoning the run — so per-item
+  memory was dropped from the workflow at the same time.
+  Also recorded: run at **reasoning effort `low`**, because the thinking overhead measured
+  on this silicon is a floor rather than a proportion (489 output tokens for a one-sentence
+  answer, ~90% reasoning), which is tolerable once and costs ~17s per turn across a 40-turn
+  tool loop; and send a final `"keep_alive": 0` call, since `OLLAMA_KEEP_ALIVE=-1` with
+  `OLLAMA_MAX_LOADED_MODELS=1` would otherwise leave the librarian's model pinned all day
+  having evicted whatever Dave uses interactively. Both are per-request overrides needing no
+  change to CT102's deliberate global settings. P3 in [actions.md](actions.md) updated.
+
 ## 2026-07-31 (1)
 * **Designed an autonomous n8n librarian agent for the Calibre, inbox and audiobook
   libraries, and wrote it up as a playbook — [n8n librarian agent](playbooks/n8n-librarian-agent.md).

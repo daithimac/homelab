@@ -454,10 +454,20 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
   `AIVault/ollama-models` are RP/creative/uncensored finetunes
   ([inventory](/containers/ollama.md#model-inventory-2026-07-29)), a class that routinely
   ships a chat template with no tool-call support. An n8n Tools Agent against one of them
-  fails in a way that looks like an n8n bug. Fix is to pull a mainstream **instruct** MoE —
-  `qwen3:30b-a3b` first, per this box's own `A<n>B`-before-file-size rule (the 26B-A4B MoE
-  measures 24.82 tok/s against the 27B dense model's 4.28) — and prove tool support with
-  the `/api/chat` probe in the playbook rather than trusting the model card. Six other
+  fails in a way that looks like an n8n bug. Fix is **`ollama pull gpt-oss:20b`** — ~3.6B
+  active MoE, ~14GB, and the reference benchmark on this exact silicon
+  ([Local LLM daily driver](/playbooks/local-llm-daily-driver.md#what-the-models-actually-do))
+  measures it at **28.7 t/s**, effectively tied for fastest and inside the envelope the
+  store's existing 18GB model already proves. `qwen3:30b-a3b` (21.6 t/s at Q4) is the
+  fallback if gpt-oss's native MXFP4 quant turns out to have a slow Vulkan path. Prove tool
+  support with the `/api/chat` probe in the playbook rather than trusting the model card.
+  **`gpt-oss:120b` is now reachable at 72 GiB GTT (20.7 t/s at 59 GiB) and is still the
+  wrong call** — it would leave ~13 GiB of GTT for everything else on a box where a GPU OOM
+  hard-locks the NAS and the LAN's only DNS, and the CT102 cgroup limit that item asks for
+  is still open. **Related and separately blocking: `OLLAMA_CONTEXT_LENGTH=12400`.** Ollama
+  truncates silently past it, so an agent handed a full catalogue dump loses its own
+  cardinal rules out of the context window — the playbook's design batches one item per
+  iteration and overrides `num_ctx` per request rather than changing the global. Six other
   assumptions in that page are also unverified, the Calibre library path being the one that
   changes the design if wrong; the playbook's
   [verification block](/playbooks/n8n-librarian-agent.md#before-you-start--verify-these-six-things-on-the-box)

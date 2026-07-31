@@ -279,11 +279,16 @@ Schedule Trigger (03:00)
   → HTTP Request      GET  /scan/inbox
   → HTTP Request      GET  /calibre/list
   → HTTP Request      GET  /scan/audiobooks
-  → AI Agent (Tools Agent)
-        Chat Model:   Ollama                      (192.168.0.13:11434)
-        Memory:       Window Buffer, per run_id   — NOT persistent across nights
-        Tools:        HTTP Request Tool × 10, one per mutating endpoint
-        Output:       Structured Output Parser (the report schema)
+  → Loop Over Items   one book / one directory per iteration
+    → HTTP Request    GET  /calibre/search?q=<this title>   → ≤10 candidates
+    → AI Agent (Tools Agent)
+        Chat Model:   Ollama gpt-oss:20b          (192.168.0.13:11434)
+                      num_ctx 32768, reasoning effort low
+        Memory:       none — each item is independent, and shared memory across
+                      items is how one bad match contaminates the next
+        Tools:        HTTP Request Tool × 9, one per mutating endpoint
+        Output:       Structured Output Parser (one item's actions)
+  → Aggregate         merge per-item results into the run report
   → Postgres          insert run summary
   → HTTP Request      POST /run/end
   → HTTP Request      POST /abs/rescan            (only if audiobooks changed)
@@ -294,49 +299,128 @@ Settings that matter: **Execution Order v1**, **"Do not run concurrently"**, wor
 timeout ~2h, and an **Error Workflow** set — an unattended agent that dies silently is
 worse than one that fails loudly.
 
-The three `scan`/`list` calls are made *before* the agent and passed in as context rather
-than left as tools. The agent doing its own inventory means it decides how much to look at;
-handing it the full picture up front means the same run every night, and it keeps the
-catalogue out of the tool-call loop where it would be re-fetched a dozen times.
+## Context: batch the work, don't dump the catalogue
 
-## The model gap — nothing installed can drive a tools agent
+**`OLLAMA_CONTEXT_LENGTH=12400` is set globally on CT102** — chosen against a dense model,
+per [Local LLM daily driver](local-llm-daily-driver.md#kv-cache-a-memory-lever-not-a-speed-lever).
+That is a hard ceiling and Ollama **truncates silently** when you cross it. For an
+autonomous agent that is not a performance problem, it is a correctness catastrophe: the
+system prompt is ~1,500 tokens, the tool schemas another ~800, and a full `calibre/list`
+dump of a few hundred books is 20k+ on its own. Cross the line and the cardinal rules are
+what falls out of the window — you get an agent with tools and no constraints, at 03:00,
+with nobody watching.
 
-**This is the one blocking dependency.** The seven models in
-`AIVault/ollama-models` are all RP/creative/uncensored finetunes —
+Two changes, both required:
+
+1. **Loop, don't dump.** Put a **Loop Over Items** node around the agent and give it *one
+   inbox file per iteration*, plus the ≤10 candidate Calibre records returned by a
+   `calibre_search` on that book's title — not the catalogue. Steps 2–4 get their own
+   batched loops. This keeps each turn a few thousand tokens, and it is the better agent
+   design regardless: small context measurably improves rule adherence, and a per-item loop
+   means one bad item fails one iteration instead of poisoning the whole run.
+2. **Raise `num_ctx` per request to 32768**, as a request-level option from the n8n Ollama
+   node rather than by changing the global env — the global affects openwebui and
+   sillytavern too. With `OLLAMA_KV_CACHE_TYPE=q8_0` and flash attention already on, 32K is
+   affordable on a ~4B-active MoE; measure the KV cost with the command above before
+   assuming it.
+
+Belt and braces: the loop keeps you far under the ceiling, and `num_ctx` means a single
+unusually large item degrades instead of silently losing the rules.
+
+## The model — pull `gpt-oss:20b`
+
+**Nothing currently installed can drive a tools agent.** All seven models in
+`AIVault/ollama-models` are RP/creative/uncensored finetunes —
 `gemma-4-26B-A4B-...-ultra-uncensored-heretic`, `Melody1437`, `MistralRP-Noromaid`,
-`Qwen3.5-4B-NSFW-...`, and so on ([full inventory](/containers/ollama.md#model-inventory-2026-07-29)).
-Finetunes of that kind routinely ship a chat template with no tool-call support and, worse,
-instruction-following degraded exactly where you need it. An n8n Tools Agent against one of
-those will emit tool calls as prose and the workflow will fail in a way that looks like an
-n8n bug.
+`Qwen3.5-4B-NSFW-...` ([full inventory](/containers/ollama.md#model-inventory-2026-07-29)).
+That class routinely ships a chat template with no tool-call support and, worse,
+instruction-following degraded exactly where the cardinal rules need it. An n8n Tools Agent
+against one of them emits tool calls as prose and fails in a way that reads like an n8n bug.
 
-Pull a mainstream **instruct** model with tool support, and pick an **MoE** — this box has
-already measured why. The bundle's own rule: check the name for an `A<n>B` suffix before
-the file size, because only active parameters are read per token. The 26B-A4B MoE already
-in the store runs **24.82 tok/s** against the 27B dense model's **4.28**, at nearly
-identical file size. So `qwen3:30b-a3b` (30B total, ~3B active) should land in the same
-band as that gemma, and is the first thing to try; `qwen3:8b` is the smaller fallback.
+The recommendation is **`gpt-oss:20b`**, and it is not a guess — this silicon has a
+measured number for it. The reference benchmark in
+[Local LLM daily driver](local-llm-daily-driver.md#what-the-models-actually-do) puts
+gpt-oss-20B (~3.6B active MoE) at **28.7 t/s**, effectively tied with the fastest model
+tested on the same gfx1150 and ahead of every Qwen MoE in the table. Four reasons it's the
+right pick here specifically:
 
-Verify tool support before wiring anything — the model card is not proof:
+* **It obeys this box's own rule.** `A<n>B` before file size: ~3.6B active out of 21B
+  total, so it runs like a 4B and costs like a 14GB file.
+* **It's inside the proven envelope.** The store's largest model today is 18GB. At ~14GB
+  this needs no cgroup work, no ARC cap, and no change to the GTT budget — see
+  [why not the 120B](#why-not-gpt-oss120b) below.
+* **It was built for agentic tool loops**, which is the actual workload — not prose.
+* **Adjustable reasoning effort** (`low`/`medium`/`high`) is exactly the lever a 40-turn
+  tool loop needs. See [the thinking tax](#set-reasoning-effort-low).
+
+**Fallback: `qwen3:30b-a3b`.** The same table has Qwen3.6-35B-A3B at **21.6 t/s** at Q4
+(21.7GB) — slower and larger, but a bog-standard `Q4_K_M` that the Vulkan backend certainly
+handles. Keep it in reserve for the one risk gpt-oss carries here: it ships natively in
+**MXFP4**, a newer quant whose Vulkan path is less travelled than K-quants. If throughput
+comes in far below 28 t/s, that's the suspect — swap rather than debug.
+
+**Don't use a dense model.** The dense rule (`~80 ÷ size-in-GB`) puts a 24B Q4 at ~5.6 t/s,
+already measured on this box. Forty agent turns at 5.6 t/s is an hour of generation for a
+job that should take twenty minutes.
+
+### Verify tool support before wiring anything
+
+The model card is not proof:
 
 ```bash
-pct exec 102 -- ollama pull qwen3:30b-a3b
+pct exec 102 -- ollama pull gpt-oss:20b
 curl -s http://192.168.0.13:11434/api/chat -d '{
-  "model":"qwen3:30b-a3b","stream":false,
+  "model":"gpt-oss:20b","stream":false,
   "messages":[{"role":"user","content":"List the inbox."}],
   "tools":[{"type":"function","function":{"name":"scan_inbox",
             "description":"list files in the inbox","parameters":{"type":"object","properties":{}}}}]
 }' | jq '.message.tool_calls'
 ```
 
-A populated `tool_calls` array means go. `null` with the answer in `.message.content` means
-that model cannot drive the agent, whatever its card says.
+A populated `tool_calls` array means go. `null`, with the answer sitting in
+`.message.content`, means that model cannot drive the agent whatever its card says.
 
-Two scheduling consequences of CT102's concurrency settings, which are deliberate and
-should not be changed for this: `OLLAMA_MAX_LOADED_MODELS=1` means the librarian's model
-**evicts whatever openwebui or sillytavern had loaded**, and `OLLAMA_NUM_PARALLEL=1` means
-its calls queue behind any interactive chat. Both are fine at 03:00 and both are reasons
-not to run this during the day.
+Check the real throughput and the KV cost too, because **KV cost varies ~10× by
+architecture** (`qwen35moe` 20 KiB/token vs `glm4moe` 188 KiB/token) and gpt-oss is its own
+architecture with no figure in this bundle yet:
+
+```bash
+pct exec 102 -- ollama run gpt-oss:20b --verbose "Say hello."   # eval rate
+pct exec 102 -- journalctl -u ollama -n 50 | grep -i 'KV\|offload'
+```
+
+### Set reasoning effort low
+
+Thinking overhead on this silicon is **a floor, not a proportion** — the reference writeup
+measured 489 output tokens for a one-sentence answer, ~90% of it reasoning. That's fine for
+one chat reply and awful across 40 tool-selection turns: at 28 t/s it adds ~17s *per turn*,
+turning a 20-minute run into an hour. Tool selection is not the part of this job that needs
+deliberation; the matching rules are already written down. Run at **`low`**, and only raise
+it if the reports show bad judgement calls rather than bad tool calls.
+
+### Why not gpt-oss:120b
+
+It is genuinely reachable now — 20.7 t/s measured at 59 GiB against a 57.2 GiB GTT, and
+this host raised GTT to 72 GiB on 2026-07-29. It is still the wrong call. It would leave
+~13 GiB of GTT for KV cache and everything else, on a box where a GPU OOM **hard-locks the
+whole machine** — taking down the NAS, Home Assistant, Jellyfin and
+[AdGuard](/containers/adguard.md), which is the LAN's only DNS. The
+[memory-contention section](local-llm-daily-driver.md#memory-contention--the-risk-that-matters-more-than-any-speed-number)
+says to set a cgroup limit on CT102 **before** any experiment with larger models, and that
+is still open in [actions.md](/actions.md). Cataloguing ebook metadata is not the errand to
+spend that risk on. If you ever do pull it, do the guardrail first.
+
+### Two settings the run has to work around
+
+Both are deliberate on CT102 and neither should be changed for this:
+
+* `OLLAMA_MAX_LOADED_MODELS=1` — the librarian's model **evicts whatever openwebui or
+  sillytavern had loaded**, and `OLLAMA_KEEP_ALIVE=-1` then pins it there all day. Send
+  `"keep_alive": 0` on a final throwaway call at the end of the workflow to unload it, so
+  Dave's morning chat doesn't pay a cold load. That's a per-request override; it needs no
+  change to the global env.
+* `OLLAMA_NUM_PARALLEL=1` — agent calls queue behind any interactive chat. A reason to keep
+  this at 03:00, not a reason to raise it.
 
 ## Credentials
 
