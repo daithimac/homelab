@@ -13,3 +13,4 @@ fast path to a known fix.
 * [Reverse proxy via Caddy](reverse-proxy-caddy.md) - how `.lan` domains get real HTTPS with no port, on docker-stack (VM103).
 * [133gsl.ie on Cloudflare DNS](dns-cloudflare-133gsl-ie.md) - the public domain, split-horizon DNS, and publicly-trusted wildcard certs with no open ports.
 * [EPUB/PDF to audiobook](epub-to-audiobook.md) - converting ebooks to MP3 with Kokoro TTS and CT111.
+* [n8n librarian agent](n8n-librarian-agent.md) - design for an autonomous agent curating the Calibre, inbox and audiobook libraries via a Librarian API on CT111. **Designed, not built.**

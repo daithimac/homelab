@@ -1,5 +1,59 @@
 # Directory Update Log
 
+## 2026-07-31 (1)
+* **Designed an autonomous n8n librarian agent for the Calibre, inbox and audiobook
+  libraries, and wrote it up as a playbook — [n8n librarian agent](playbooks/n8n-librarian-agent.md).
+  Nothing was built or run: the host is not reachable from the session that drafted this,
+  so six load-bearing facts are flagged as unverified assumptions rather than asserted.
+  One blocking dependency was found on paper — no model currently in the Ollama store can
+  drive a tools agent.**
+  **The constraint that shapes the design: n8n cannot see the library.** It runs in Docker
+  on [docker-stack (VM103)](containers/docker-stack.md), and a VM cannot bind-mount a ZFS
+  dataset — the same fact that put the audiobook converter in an LXC rather than next to
+  n8n in Compose. So n8n gets no filesystem access at all and a small **Librarian API on
+  [audiobooks (CT111)](containers/audiobooks.md)** does everything that touches a file.
+  CT111 was picked over the alternatives (a CIFS mount into VM103, or n8n SSHing to the
+  host to `pct exec`) because it already has calibre 8.5.0, ffmpeg and the *whole*
+  `/MediaTank/media` tree bind-mounted, and because it can launch conversions locally with
+  `systemd-run` — so nothing gets hypervisor access and no SMB credentials land on VM103.
+  Following the in-fleet convention that service-to-service calls go to raw `IP:port`
+  ([ollama](containers/ollama.md)), it is deliberately **not** proxied: no new Caddy block,
+  no new AdGuard rewrite.
+  **Full autonomy was Dave's call; the guardrails were the answer to it.** The concern was
+  stated plainly — unattended file operations against a 1.4T library is the mode that can
+  quietly destroy it — and the design keeps the autonomy while moving every guard out of
+  the prompt and into the API, on the reasoning that a prompt is a request and only code
+  actually refuses. Six of them: no delete endpoint exists at all (`trash` moves into a
+  dotted `.librarian/trash/<run-id>/`, and a host-side timer is the only thing in the
+  system that calls `rm`); a ZFS snapshot at 02:50 ahead of the 03:00 run; a path allowlist
+  checked after `realpath` rather than by string prefix, because
+  `Audiobooks/../Books/Calibre Library` is exactly the shape of path a confused model
+  emits; a **per-run mutation budget** returning `429` past 50, which is the guard that
+  bounds damage from failure modes nobody predicted; a `flock` making `calibredb`
+  single-writer; and an append-only Postgres ledger.
+  **Calibre gets a stricter rule than the other two trees** — `metadata.db` is the truth
+  and the `Author/Title (id)/` tree is derived output, so a file moved by hand leaves a
+  record pointing at nothing until someone notices a book won't open. The API therefore
+  exposes *no* generic file operation against that root; `move` and `trash` reject it
+  outright and the only way in is `calibredb`. That asymmetry is also why the inbox stays a
+  separate tree.
+  **The blocking dependency.** All seven models in `AIVault/ollama-models` are
+  RP/creative/uncensored finetunes, a class that routinely ships a chat template with no
+  tool-call support — an n8n Tools Agent against one fails in a way that reads as an n8n
+  bug. The recommendation applies this bundle's own MoE finding rather than a generic one:
+  check for an `A<n>B` suffix before file size (the 26B-A4B MoE measures 24.82 tok/s
+  against the 27B dense model's 4.28 at nearly identical file size), so `qwen3:30b-a3b`
+  first — with an `/api/chat` probe given to prove tool support instead of trusting the
+  model card. Filed as a P3 in [actions.md](actions.md), together with the six
+  verification checks and a note that Audiobookshelf's first-run setup and the leftover
+  CT111 smoke-test artefacts are prerequisites, not related work.
+  Also written down: a staged rollout that starts in dry-run for a week and enables the
+  inbox job before anything that moves directories, and the box-specific traps the workflow
+  will otherwise hit — `localhost` meaning the n8n container rather than VM103, the
+  Kokoro-only `audiobook` wrapper, `nohup`-in-`pct-exec` not working, and the setgid
+  inheritance that has to be verified after the first real write rather than read off the
+  mode bits. Playbook added to [playbooks/index.md](playbooks/index.md).
+
 ## 2026-07-30 (1)
 * **Executed the iGPU optimisation plan overnight (evening of 2026-07-29 into the early
   hours) — every transferable lever from the Strix Point writeup tested against this host,

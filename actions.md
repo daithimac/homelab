@@ -448,6 +448,24 @@ or a new one is found — don't let findings just live in [log.md](log.md) histo
 
 ## P3 — open
 
+* **The n8n librarian agent is designed but not built, and it has one blocking dependency:
+  no model in the Ollama store can drive a tools agent.** Design written 2026-07-31 —
+  [n8n librarian agent](/playbooks/n8n-librarian-agent.md). All seven models in
+  `AIVault/ollama-models` are RP/creative/uncensored finetunes
+  ([inventory](/containers/ollama.md#model-inventory-2026-07-29)), a class that routinely
+  ships a chat template with no tool-call support. An n8n Tools Agent against one of them
+  fails in a way that looks like an n8n bug. Fix is to pull a mainstream **instruct** MoE —
+  `qwen3:30b-a3b` first, per this box's own `A<n>B`-before-file-size rule (the 26B-A4B MoE
+  measures 24.82 tok/s against the 27B dense model's 4.28) — and prove tool support with
+  the `/api/chat` probe in the playbook rather than trusting the model card. Six other
+  assumptions in that page are also unverified, the Calibre library path being the one that
+  changes the design if wrong; the playbook's
+  [verification block](/playbooks/n8n-librarian-agent.md#before-you-start--verify-these-six-things-on-the-box)
+  is the checklist. Two existing items are prerequisites rather than related work:
+  Audiobookshelf's first-run setup, and the leftover CT111 test artefacts in
+  `/srv/media/Audiobooks` (both below) — the librarian's first report is otherwise a page
+  of findings about smoke tests.
+
 * **`/opt/AdGuardHome` on [CT109](/containers/adguard.md) is mode `0755`, and it holds the
   admin bcrypt hash plus eleven backup copies of it.** Surfaced 2026-07-28 during the
   password reset — AdGuard logs it itself on every start: `permcheck: warning: found
